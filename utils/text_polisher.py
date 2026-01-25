@@ -1,343 +1,333 @@
 """
-Text polisher using DeepSeek API
-优化转录文本：添加标点、分段、章节划分
+Text polisher using DeepSeek Reasoner with thinking mode
+Supports multi-turn conversation for long transcripts
 """
-import os
+import logging
 import re
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Optional, List, Dict, Any, Tuple
 from openai import OpenAI
 
-from utils.logger import get_logger
+from config.settings import DEEPSEEK_CONFIG
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class TextPolisher:
-    """Polish transcribed text using DeepSeek LLM"""
-
-    def __init__(self):
-        """Initialize text polisher with DeepSeek API"""
-        from config.settings import DEEPSEEK_CONFIG
+    """
+    Text polisher using DeepSeek Reasoner with thinking mode enabled.
+    
+    Strategy for long transcripts:
+    - Turn 1: Generate chapter outline based on content
+    - Turn 2+: Polish each chapter with context from previous turns
+    """
+    
+    # Characters per chunk for multi-turn processing
+    CHUNK_SIZE = 8000
+    
+    def __init__(self, api_key: Optional[str] = None):
+        """
+        Initialize TextPolisher with DeepSeek API
         
-        self.api_key = DEEPSEEK_CONFIG.get("api_key") or os.getenv("DEEPSEEK_API_KEY", "")
-        self.model = DEEPSEEK_CONFIG.get("model", "deepseek-chat")
+        Args:
+            api_key: DeepSeek API key (optional, uses config if not provided)
+        """
+        self.api_key = api_key or DEEPSEEK_CONFIG.get("api_key")
         self.base_url = DEEPSEEK_CONFIG.get("base_url", "https://api.deepseek.com")
-        self.timeout = DEEPSEEK_CONFIG.get("timeout", 300)  # Longer timeout for long text
-        self.max_tokens_limit = 8000  # DeepSeek limit is 8192, leave some buffer
+        self.model = DEEPSEEK_CONFIG.get("model", "deepseek-reasoner")
+        self.max_tokens = DEEPSEEK_CONFIG.get("max_tokens", 32768)
+        self.thinking_enabled = DEEPSEEK_CONFIG.get("thinking", True)
         
         if not self.api_key:
-            logger.warning("DeepSeek API key not found. Text polishing will be skipped.")
+            logger.warning("DeepSeek API key not configured, TextPolisher will be disabled")
             self.client = None
         else:
-            self.client = OpenAI(
-                api_key=self.api_key,
-                base_url=self.base_url,
-                timeout=self.timeout
-            )
-            logger.info("TextPolisher initialized with DeepSeek API")
+            self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+            logger.info(f"TextPolisher initialized with model: {self.model}, thinking: {self.thinking_enabled}")
 
     def is_available(self) -> bool:
         """Check if polisher is available"""
         return self.client is not None
 
-    def polish_segments(
-        self,
-        segments: List[Dict[str, Any]],
-        source_language: str = "zh"
-    ) -> List[Dict[str, Any]]:
+    def _call_deepseek(self, messages: List[Dict[str, str]], 
+                       max_tokens: Optional[int] = None) -> Tuple[Optional[str], Optional[str]]:
         """
-        Polish transcript segments while preserving timestamps.
-        Each segment's text gets punctuation added.
+        Call DeepSeek API with thinking mode
         
         Args:
-            segments: List of transcript segments with 'start', 'end', 'text'
-            source_language: Source language of the audio
+            messages: Conversation messages
+            max_tokens: Max tokens for response
             
         Returns:
-            List of segments with polished 'text' field
-        """
-        if not self.client or not segments:
-            return segments
-        
-        # Combine all text for batch processing
-        texts = [seg.get('text', '').strip() for seg in segments]
-        combined_text = '\n'.join(f"[{i}] {t}" for i, t in enumerate(texts) if t)
-        
-        # Determine if we should convert to simplified Chinese
-        is_chinese = source_language.lower() in ['zh', 'zh-cn', 'zh-tw', 'chinese', 'mandarin', 'cantonese', 'auto']
-        
-        simplify_instruction = ""
-        if is_chinese:
-            simplify_instruction = "3. 将繁体字转换为简体字\n"
-        
-        system_prompt = """你是一个文本标点符号添加助手。用户会给你一系列带编号的语音转录片段，你需要为每个片段添加合适的标点符号。
-
-要求：
-- 保持原有的编号格式 [数字]
-- 只添加标点符号，不要改变原文内容
-- 修正明显的语音识别错误（同音字）
-- 直接输出处理后的文本，不要有任何解释"""
-
-        user_prompt = f"""请为以下语音转录片段添加标点符号。
-
-要求：
-1. 添加标点符号（句号、逗号、问号、感叹号等）
-2. 保持 [数字] 编号格式不变
-{simplify_instruction}4. 不要删除或添加实质性内容
-
-转录片段：
-{combined_text}
-
-添加标点后："""
-
-        try:
-            logger.info(f"Polishing {len(segments)} segments ({len(combined_text)} chars)...")
-            
-            # Split into chunks if text is too long
-            max_input_chars = 15000  # Leave room for prompt and response
-            if len(combined_text) > max_input_chars:
-                return self._polish_segments_in_chunks(segments, source_language)
-            
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                max_tokens=self.max_tokens_limit,
-                temperature=0.1,
-            )
-            
-            polished_text = response.choices[0].message.content
-            if not polished_text:
-                logger.warning("Empty response, returning original segments")
-                return segments
-            
-            # Parse polished text back into segments
-            polished_segments = self._parse_polished_segments(polished_text, segments)
-            logger.info(f"Segments polished successfully")
-            return polished_segments
-            
-        except Exception as e:
-            logger.error(f"Segment polishing failed: {e}")
-            return segments
-
-    def _polish_segments_in_chunks(
-        self,
-        segments: List[Dict[str, Any]],
-        source_language: str
-    ) -> List[Dict[str, Any]]:
-        """Polish segments in chunks when text is too long"""
-        chunk_size = 200  # segments per chunk
-        polished_segments = []
-        
-        for i in range(0, len(segments), chunk_size):
-            chunk = segments[i:i + chunk_size]
-            logger.info(f"Processing chunk {i//chunk_size + 1} ({len(chunk)} segments)")
-            polished_chunk = self._polish_single_chunk(chunk, source_language, i)
-            polished_segments.extend(polished_chunk)
-        
-        return polished_segments
-
-    def _polish_single_chunk(
-        self,
-        segments: List[Dict[str, Any]],
-        source_language: str,
-        start_index: int
-    ) -> List[Dict[str, Any]]:
-        """Polish a single chunk of segments"""
-        if not self.client or not segments:
-            return segments
-        
-        texts = [seg.get('text', '').strip() for seg in segments]
-        combined_text = '\n'.join(f"[{i}] {t}" for i, t in enumerate(texts) if t)
-        
-        is_chinese = source_language.lower() in ['zh', 'zh-cn', 'zh-tw', 'chinese', 'mandarin', 'cantonese', 'auto']
-        simplify_instruction = "3. 将繁体字转换为简体字\n" if is_chinese else ""
-        
-        system_prompt = """你是一个文本标点符号添加助手。用户会给你一系列带编号的语音转录片段，你需要为每个片段添加合适的标点符号。保持编号格式，直接输出结果。"""
-
-        user_prompt = f"""为以下转录片段添加标点：
-1. 添加标点符号
-2. 保持 [数字] 编号
-{simplify_instruction}
-{combined_text}"""
-
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                max_tokens=self.max_tokens_limit,
-                temperature=0.1,
-            )
-            
-            polished_text = response.choices[0].message.content
-            if not polished_text:
-                return segments
-            
-            return self._parse_polished_segments(polished_text, segments)
-            
-        except Exception as e:
-            logger.error(f"Chunk polishing failed: {e}")
-            return segments
-
-    def _parse_polished_segments(
-        self,
-        polished_text: str,
-        original_segments: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """Parse polished text back into segment format"""
-        # Extract polished texts by index
-        pattern = r'\[(\d+)\]\s*(.+?)(?=\[\d+\]|$)'
-        matches = re.findall(pattern, polished_text, re.DOTALL)
-        
-        polished_map = {}
-        for idx_str, text in matches:
-            try:
-                idx = int(idx_str)
-                polished_map[idx] = text.strip()
-            except ValueError:
-                continue
-        
-        # Update segments with polished text
-        result = []
-        for i, seg in enumerate(original_segments):
-            new_seg = seg.copy()
-            if i in polished_map:
-                new_seg['text'] = polished_map[i]
-            result.append(new_seg)
-        
-        return result
-
-    def polish_transcript(
-        self, 
-        text: str, 
-        duration_minutes: float = 0,
-        source_language: str = "zh"
-    ) -> Tuple[str, List[Dict[str, Any]]]:
-        """
-        Polish transcribed text: add punctuation, paragraphs, organize into chapters.
-        Used for document generation (DOCX/Markdown).
-        
-        Args:
-            text: Raw transcribed text (full text without timestamps)
-            duration_minutes: Video duration in minutes (for chapter limit calculation)
-            source_language: Source language of the audio (zh/en/ja/ko etc.)
-            
-        Returns:
-            Tuple of (polished_text, chapters)
-            - polished_text: Full polished text with chapter markers
-            - chapters: List of chapter dicts with 'title' and 'content'
+            Tuple of (content, reasoning_content)
         """
         if not self.client:
-            logger.warning("TextPolisher not initialized, returning original text")
-            return text, []
-        
-        if not text or len(text.strip()) < 10:
-            return text, []
-        
-        # Calculate max chapters based on duration (1 chapter per 15 minutes max)
-        max_chapters = max(1, int(duration_minutes / 15)) if duration_minutes > 0 else 10
-        
-        # Determine if we should convert to simplified Chinese
-        is_chinese = source_language.lower() in ['zh', 'zh-cn', 'zh-tw', 'chinese', 'mandarin', 'cantonese', 'auto']
-        
-        simplify_instruction = ""
-        if is_chinese:
-            simplify_instruction = "4. 将所有繁体字转换为简体字\n"
-        
-        system_prompt = """你是一位专业的文字编辑和内容整理专家。你的任务是将语音转录的原始文本整理成结构清晰、易于阅读的文章。
-
-你需要：
-- 准确添加标点符号，使句子通顺
-- 根据内容语义划分段落和章节
-- 为每个章节拟定简洁准确的标题
-- 保持原文的核心内容和说话者的原意
-- 修正明显的语音识别错误（同音字、漏字等）
-
-输出格式要求：
-- 使用 "## 章节标题" 格式标记每个章节的开始
-- 章节内的段落之间用空行分隔
-- 不要添加任何解释性文字，直接输出整理后的内容"""
-
-        user_prompt = f"""请整理以下语音转录文本。
-
-整理要求：
-1. 添加合适的标点符号（句号、逗号、问号、感叹号、冒号、引号等）
-2. 根据内容大意划分章节，每个章节拟一个简洁的标题（使用 "## 标题" 格式）
-3. 章节数量不超过 {max_chapters} 个（视频时长约 {int(duration_minutes)} 分钟）
-{simplify_instruction}5. 章节内按语义划分段落（每段3-6句话）
-6. 修正明显的语音识别错误，但保持原意
-7. 不要删除或添加实质性内容
-
-原始转录文本：
-{text}
-
-整理后的文本："""
-
+            return None, None
+            
         try:
-            logger.info(f"Polishing text ({len(text)} chars, max {max_chapters} chapters)...")
+            # Build request parameters
+            params = {
+                "model": self.model,
+                "messages": messages,
+                "max_tokens": max_tokens or self.max_tokens,
+            }
             
-            # If text is too long, truncate for chapter organization
-            # (segments are already polished separately)
-            if len(text) > 20000:
-                logger.warning(f"Text too long ({len(text)} chars), truncating to 20000 for chapter organization")
-                text = text[:20000] + "..."
-                user_prompt = user_prompt.replace(text[:20000] + "...", text)
+            # Enable thinking mode if configured
+            if self.thinking_enabled:
+                params["extra_body"] = {"thinking": {"type": "enabled"}}
             
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                max_tokens=self.max_tokens_limit,
-                temperature=0.1,
-            )
+            logger.debug(f"Calling DeepSeek API with {len(messages)} messages")
+            response = self.client.chat.completions.create(**params)
             
-            polished = response.choices[0].message.content
-            if polished:
-                polished = polished.strip()
-                logger.info(f"Text polished: {len(text)} -> {len(polished)} chars")
-                
-                # Parse chapters from polished text
-                chapters = self._parse_chapters(polished)
-                logger.info(f"Extracted {len(chapters)} chapters")
-                
-                return polished, chapters
-            else:
-                logger.warning("Empty response from DeepSeek, returning original text")
-                return text, []
+            content = response.choices[0].message.content
+            reasoning_content = getattr(response.choices[0].message, 'reasoning_content', None)
+            
+            logger.debug(f"Response received: {len(content) if content else 0} chars")
+            if reasoning_content:
+                logger.debug(f"Reasoning content: {len(reasoning_content)} chars")
+            
+            return content, reasoning_content
             
         except Exception as e:
-            logger.error(f"Text polishing failed: {e}")
-            return text, []
+            logger.error(f"DeepSeek API call failed: {e}")
+            return None, None
 
-    def _parse_chapters(self, text: str) -> List[Dict[str, Any]]:
+    def polish(self, raw_transcript: str, video_title: str = "", 
+               duration_minutes: float = 0) -> Optional[str]:
         """
-        Parse chapters from polished text
+        Polish raw transcript using multi-turn conversation
+        
+        Strategy:
+        1. If text is short (<CHUNK_SIZE), polish in single turn
+        2. If text is long, use multi-turn: outline first, then polish by chapter
         
         Args:
-            text: Polished text with ## chapter markers
+            raw_transcript: Raw transcript text from Whisper
+            video_title: Optional video title for context
+            duration_minutes: Video duration in minutes
             
         Returns:
-            List of chapter dicts with 'title' and 'content'
+            Polished text with chapter markers, or None if failed
         """
+        if not self.client:
+            logger.warning("TextPolisher not available, returning raw transcript")
+            return raw_transcript
+            
+        if not raw_transcript or not raw_transcript.strip():
+            logger.warning("Empty transcript, nothing to polish")
+            return raw_transcript
+        
+        text_length = len(raw_transcript)
+        logger.info(f"Polishing transcript: {text_length} chars, {duration_minutes:.1f} minutes")
+        
+        # Use simple single-turn for short texts
+        if text_length <= self.CHUNK_SIZE:
+            return self._polish_single_turn(raw_transcript, video_title)
+        
+        # Use multi-turn for long texts
+        return self._polish_multi_turn(raw_transcript, video_title, duration_minutes)
+
+    def _polish_single_turn(self, text: str, video_title: str = "") -> Optional[str]:
+        """
+        Polish short text in a single API call
+        
+        Args:
+            text: Raw transcript text
+            video_title: Optional video title
+            
+        Returns:
+            Polished text
+        """
+        title_context = f"视频标题：《{video_title}》\n" if video_title else ""
+        
+        system_prompt = """你是一位专业的文字编辑，擅长将语音转录文本整理成结构清晰、易于阅读的文档。
+
+你的任务是：
+1. 修正语音识别错误（错别字、专业术语等）
+2. 去除口语化表达和语气词（啊、嗯、然后、这个、那个等）
+3. 合并重复和冗余的表达
+4. 根据内容主题划分章节，用 ## 章节标题 格式标记
+5. 在每个章节内保持原文的核心信息，但使行文流畅
+
+输出格式：
+## 第一章节的标题
+该章节的整理后内容...
+
+## 第二章节的标题
+该章节的整理后内容...
+
+注意：保持原文的信息完整性，不要添加原文没有的内容。"""
+
+        user_prompt = f"""{title_context}请整理以下语音转录文本：
+
+{text}"""
+
+        messages = [
+            {"role": "user", "content": system_prompt + "\n\n" + user_prompt}
+        ]
+        
+        content, _ = self._call_deepseek(messages)
+        return content
+
+    def _polish_multi_turn(self, text: str, video_title: str = "", 
+                           duration_minutes: float = 0) -> Optional[str]:
+        """
+        Polish long text using multi-turn conversation
+        
+        Turn 1: Generate chapter outline
+        Turn 2+: Polish each section with context
+        
+        Args:
+            text: Raw transcript text
+            video_title: Optional video title
+            duration_minutes: Video duration
+            
+        Returns:
+            Polished text with chapters
+        """
+        title_context = f"视频标题：《{video_title}》" if video_title else ""
+        duration_context = f"（时长约{duration_minutes:.0f}分钟）" if duration_minutes > 0 else ""
+        
+        # Split text into chunks
+        chunks = self._split_into_chunks(text)
+        logger.info(f"Split transcript into {len(chunks)} chunks for processing")
+        
+        # Turn 1: Analyze structure and get chapter outline
+        outline_prompt = f"""你是一位专业的文字编辑。我将分段发送一份长篇语音转录文本{duration_context}。
+
+{title_context}
+
+这是完整转录文本的第1部分（共{len(chunks)}部分）：
+
+{chunks[0]}
+
+请先阅读这部分内容，告诉我你打算如何划分章节。只需要给出章节大纲，格式如：
+1. [章节名称] - 简要说明该章节涵盖的内容
+2. [章节名称] - 简要说明
+...
+
+注意：现在只需要给出大纲计划，后续我会发送更多内容让你完善大纲。"""
+
+        messages = [{"role": "user", "content": outline_prompt}]
+        
+        outline_response, _ = self._call_deepseek(messages, max_tokens=4096)
+        if not outline_response:
+            logger.error("Failed to get chapter outline")
+            return self._polish_single_turn(text[:self.CHUNK_SIZE], video_title)
+        
+        logger.info("Got initial chapter outline")
+        messages.append({"role": "assistant", "content": outline_response})
+        
+        # Send remaining chunks to refine outline
+        for i, chunk in enumerate(chunks[1:], start=2):
+            chunk_prompt = f"""这是第{i}部分（共{len(chunks)}部分）：
+
+{chunk}
+
+请根据新内容更新你的章节大纲。"""
+            
+            messages.append({"role": "user", "content": chunk_prompt})
+            
+            response, _ = self._call_deepseek(messages, max_tokens=4096)
+            if response:
+                messages.append({"role": "assistant", "content": response})
+                logger.info(f"Processed chunk {i}/{len(chunks)}")
+            else:
+                logger.warning(f"Failed to process chunk {i}, continuing...")
+        
+        # Final turn: Request polished output
+        polish_prompt = """现在请根据你的章节大纲，输出整理后的完整文本。
+
+要求：
+1. 修正语音识别错误（错别字、专业术语等）
+2. 去除口语化表达和语气词
+3. 合并重复和冗余的表达
+4. 使用 ## 章节标题 格式标记各章节
+5. 保持原文的信息完整性
+
+请直接输出整理后的文本，格式如下：
+## 第一个章节标题
+该章节的整理后内容...
+
+## 第二个章节标题
+该章节的整理后内容..."""
+
+        messages.append({"role": "user", "content": polish_prompt})
+        
+        final_content, _ = self._call_deepseek(messages, max_tokens=self.max_tokens)
+        
+        if not final_content:
+            logger.error("Failed to get final polished text")
+            return None
+        
+        logger.info(f"Successfully polished text: {len(final_content)} chars output")
+        return final_content
+
+    def _split_into_chunks(self, text: str) -> List[str]:
+        """
+        Split text into chunks for multi-turn processing
+        
+        Tries to split at paragraph boundaries for better context
+        
+        Args:
+            text: Full text to split
+            
+        Returns:
+            List of text chunks
+        """
+        chunks = []
+        
+        # Try to split at double newlines (paragraphs)
+        paragraphs = re.split(r'\n\s*\n', text)
+        
+        current_chunk = []
+        current_length = 0
+        
+        for para in paragraphs:
+            para_length = len(para)
+            
+            if current_length + para_length > self.CHUNK_SIZE and current_chunk:
+                # Save current chunk and start new one
+                chunks.append('\n\n'.join(current_chunk))
+                current_chunk = [para]
+                current_length = para_length
+            else:
+                current_chunk.append(para)
+                current_length += para_length
+        
+        # Don't forget the last chunk
+        if current_chunk:
+            chunks.append('\n\n'.join(current_chunk))
+        
+        # If no good splits found, fall back to simple character splitting
+        if len(chunks) == 1 and len(text) > self.CHUNK_SIZE:
+            chunks = []
+            for i in range(0, len(text), self.CHUNK_SIZE):
+                chunks.append(text[i:i + self.CHUNK_SIZE])
+        
+        return chunks
+
+    def extract_chapters(self, polished_text: str) -> List[Dict[str, str]]:
+        """
+        Extract chapters from polished text
+        
+        Args:
+            polished_text: Text with ## chapter markers
+            
+        Returns:
+            List of dicts with 'title' and 'content' keys
+        """
+        if not polished_text:
+            return []
+        
         chapters = []
-        
-        # Split by chapter markers (## Title)
-        # Pattern matches "## " at the start of a line
-        chapter_pattern = r'^##\s+(.+)$'
-        
-        lines = text.split('\n')
         current_chapter = None
         current_content = []
         
-        for line in lines:
-            match = re.match(chapter_pattern, line.strip())
+        # Match chapter headers (## title format)
+        chapter_pattern = re.compile(r'^##\s+(.+)$')
+        
+        for line in polished_text.split('\n'):
+            match = chapter_pattern.match(line.strip())
             if match:
                 # Save previous chapter if exists
                 if current_chapter is not None:
@@ -359,10 +349,10 @@ class TextPolisher:
             })
         
         # If no chapters found, treat entire text as one chapter
-        if not chapters and text.strip():
+        if not chapters and polished_text.strip():
             chapters.append({
                 'title': '正文',
-                'content': text.strip()
+                'content': polished_text.strip()
             })
         
         return chapters
@@ -377,7 +367,9 @@ class TextPolisher:
         Returns:
             Plain text with chapter titles preserved but without ## markers
         """
-        # Replace ## markers with plain text representation
+        if not polished_text:
+            return ""
+            
         lines = polished_text.split('\n')
         result = []
         

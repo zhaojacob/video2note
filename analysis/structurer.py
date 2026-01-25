@@ -1,5 +1,11 @@
 """
 Structurer for organizing content into final note format
+
+Pipeline flow:
+1. Receive raw transcript from transcription step
+2. Call TextPolisher to polish transcript (with chapter organization)
+3. Call SummaryGenerator to generate summary
+4. Organize into final note structure
 """
 from typing import Dict, Any, List, Optional
 from datetime import datetime
@@ -12,12 +18,18 @@ logger = get_logger(__name__)
 class Structurer:
     """
     Structure raw data into organized note format
+    
+    Responsible for:
+    - Text polishing (via TextPolisher)
+    - Summary generation (via SummaryGenerator)
+    - Content organization
     """
 
     def __init__(self):
         """Initialize structurer"""
         self.summary_generator = None
         self.translator = None
+        self.text_polisher = None
 
     def _get_summary_generator(self):
         """Lazy-load summary generator"""
@@ -33,6 +45,13 @@ class Structurer:
             self.translator = Translator()
         return self.translator
 
+    def _get_text_polisher(self):
+        """Lazy-load text polisher"""
+        if self.text_polisher is None:
+            from utils.text_polisher import TextPolisher
+            self.text_polisher = TextPolisher()
+        return self.text_polisher
+
     def structure(
         self,
         video_info: Dict[str, Any],
@@ -42,22 +61,24 @@ class Structurer:
         keywords: List[str] = None,
         generate_ai_summary: bool = True,
         translate_to: str = None,
-        polished_text: str = None,
-        chapters: List[Dict[str, Any]] = None
+        duration_minutes: float = 0,
+        enable_polish: bool = True
     ) -> Dict[str, Any]:
         """
         Structure all data into final note format
+        
+        Pipeline: raw_transcript -> polish -> summary -> organize
 
         Args:
             video_info: Video metadata
-            transcript: Transcript segments
+            transcript: Transcript segments (raw from Whisper)
             frame_analyses: Frame analysis results
             summary: Video summary (if None and generate_ai_summary=True, will use DeepSeek)
             keywords: Keywords/tags
             generate_ai_summary: Whether to generate AI summary using DeepSeek
             translate_to: Target language for translation (None = no translation)
-            polished_text: Polished transcript text (with punctuation, paragraphs, simplified Chinese)
-            chapters: List of chapter dicts with 'title' and 'content' from TextPolisher
+            duration_minutes: Video duration in minutes (for polish context)
+            enable_polish: Whether to enable text polishing
 
         Returns:
             Structured note data
@@ -71,28 +92,61 @@ class Structurer:
         # Process transcript
         content = processor.process_with_frames(transcript, frame_analyses)
 
-        # Get full transcript text for summary generation
-        # Use polished text if available (with punctuation, paragraphs, simplified Chinese)
-        if polished_text:
-            full_transcript_text = polished_text
-            logger.info(f"Using polished transcript text ({len(polished_text)} chars)")
-        else:
-            full_transcript_text = self._get_full_transcript_text(transcript)
+        # Get raw transcript text
+        raw_transcript_text = self._get_full_transcript_text(transcript)
         
-        # Generate AI summary if not provided
+        # Initialize polish results
+        polished_text = ""
+        chapters = []
+        
+        # Step 1: Polish transcript (if enabled)
+        if enable_polish and raw_transcript_text:
+            logger.info("Polishing transcript with DeepSeek Reasoner...")
+            print("\n[Text Polish] Polishing transcript with DeepSeek Reasoner...")
+            try:
+                polisher = self._get_text_polisher()
+                if polisher.is_available():
+                    polished_text = polisher.polish(
+                        raw_transcript_text,
+                        video_title=video_info.get("title", ""),
+                        duration_minutes=duration_minutes
+                    )
+                    if polished_text:
+                        chapters = polisher.extract_chapters(polished_text)
+                        print(f"[Text Polish] Complete ({len(polished_text)} chars, {len(chapters)} chapters)")
+                    else:
+                        print("[Text Polish] No output, using raw transcript")
+                        polished_text = raw_transcript_text
+                else:
+                    print("[Text Polish] Skipped (no DeepSeek API key)")
+                    polished_text = raw_transcript_text
+            except Exception as e:
+                logger.error(f"Failed to polish transcript: {e}")
+                print(f"[Text Polish] Failed: {e}")
+                polished_text = raw_transcript_text
+        else:
+            polished_text = raw_transcript_text
+        
+        # Use polished text for summary generation
+        full_transcript_text = polished_text if polished_text else raw_transcript_text
+        
+        # Step 2: Generate AI summary
         if summary is None and generate_ai_summary and full_transcript_text:
-            logger.info("Generating AI summary with DeepSeek...")
-            print("\n[AI Summary] Generating summary with DeepSeek...")
+            logger.info("Generating AI summary with DeepSeek Reasoner...")
+            print("\n[AI Summary] Generating summary with DeepSeek Reasoner...")
             try:
                 summary_gen = self._get_summary_generator()
-                summary = summary_gen.generate_summary(
-                    full_transcript_text,
-                    video_info.get("title", "")
-                )
-                if summary:
-                    print(f"[AI Summary] Generated ({len(summary)} chars)")
+                if summary_gen.is_available():
+                    summary = summary_gen.generate_summary(
+                        full_transcript_text,
+                        video_info.get("title", "")
+                    )
+                    if summary:
+                        print(f"[AI Summary] Generated ({len(summary)} chars)")
+                    else:
+                        print("[AI Summary] Empty response")
                 else:
-                    print("[AI Summary] Skipped (no API key or error)")
+                    print("[AI Summary] Skipped (no DeepSeek API key)")
             except Exception as e:
                 logger.error(f"Failed to generate AI summary: {e}")
                 print(f"[AI Summary] Failed: {e}")
