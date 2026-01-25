@@ -89,8 +89,8 @@ Examples:
     parser.add_argument(
         "--frame-strategy",
         choices=["transcript", "interval", "scene"],
-        default="transcript",
-        help="Frame extraction strategy: transcript (align to speech), interval (fixed interval), scene (scene detection, fewer frames) (default: transcript)"
+        default="interval",
+        help="Frame extraction strategy: interval (fixed interval, default), transcript (align to speech), scene (scene detection)"
     )
 
     # Translation options

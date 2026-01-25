@@ -104,7 +104,7 @@ class PipelineOrchestrator:
         local_video: str = None,
         skip_transcription: bool = False,
         skip_analysis: bool = False,
-        frame_strategy: str = "transcript",
+        frame_strategy: str = "interval",
         translate_to: str = None
     ) -> Dict[str, Any]:
         """
