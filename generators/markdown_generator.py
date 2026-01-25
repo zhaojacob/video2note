@@ -50,6 +50,11 @@ class MarkdownGenerator:
 
         # Add title
         lines.append(f"# {data['metadata']['title']}\n")
+        
+        # Add translated title if available
+        title_translated = data['metadata'].get('title_translated', '')
+        if title_translated:
+            lines.append(f"*{title_translated}*\n")
 
         # Add metadata line (时间 | 来源 | 作者 | 链接)
         lines.extend(self._generate_metadata_line(data['metadata']))
@@ -59,8 +64,11 @@ class MarkdownGenerator:
 
         lines.append("---\n")
 
-        # Add AI-generated summary
-        lines.extend(self._generate_summary_section(data.get('summary', '')))
+        # Add AI-generated summary (with translation if available)
+        lines.extend(self._generate_summary_section(
+            data.get('summary', ''),
+            data.get('summary_translated', '')
+        ))
 
         lines.append("---\n")
 
@@ -152,8 +160,8 @@ class MarkdownGenerator:
             "",
         ]
 
-    def _generate_summary_section(self, summary: str) -> List[str]:
-        """Generate summary section"""
+    def _generate_summary_section(self, summary: str, summary_translated: str = "") -> List[str]:
+        """Generate summary section with optional translation"""
         lines = [
             "## 摘要",
             "",
@@ -161,6 +169,12 @@ class MarkdownGenerator:
         
         if summary:
             lines.append(summary)
+            lines.append("")
+            
+            # Add translated summary
+            if summary_translated:
+                lines.append(f"*{summary_translated}*")
+                lines.append("")
         else:
             lines.append("*（摘要生成中或未配置 DeepSeek API）*")
         
@@ -201,16 +215,22 @@ class MarkdownGenerator:
         items: List[Dict[str, Any]],
         relative_images: bool
     ) -> List[str]:
-        """Render full transcript with embedded images"""
+        """Render full transcript with embedded images and translations"""
         lines = []
         
         for item in items:
             if item["type"] == "text":
                 timestamp = self._format_timestamp(item["timestamp"])
                 content = item.get("content", "").strip()
+                content_translated = item.get("content_translated", "").strip()
                 
                 if content:
                     lines.append(f"**[{timestamp}]** {content}")
+                    
+                    # Add translation if available
+                    if content_translated:
+                        lines.append(f"&emsp;*{content_translated}*")
+                    
                     lines.append("")
                     
             elif item["type"] == "image":

@@ -101,16 +101,6 @@ video_note_system/
 - Model: `doubao-vision-pro-32k`
 - Best for: Chinese text, PPT, documents
 
-## Performance
-
-| Video Length | Processing Time | Cost |
-|-------------|----------------|------|
-| 10 minutes   | ~5 minutes     | ¥1-2 |
-| 30 minutes   | ~15 minutes    | ¥2-4 |
-| 1 hour       | ~25 minutes    | ¥3-6 |
-
-*Assumes GPU acceleration, medium Whisper model*
-
 ## CLI Options
 
 ```
@@ -119,51 +109,66 @@ python main.py <video_url> [options]
 Options:
   -f, --formats {docx,markdown,json,all}
                         Output formats (default: docx markdown json)
-  --local-video PATH    Use local video file
+  -o, --output PATH     Output directory (default: output/notes)
+  --local-video PATH    Use local video file (skip download)
   --skip-transcription  Skip audio transcription
   --skip-analysis       Skip image analysis
+
+Frame Extraction:
+  --frame-strategy {transcript,interval,scene}
+                        Frame extraction strategy (default: transcript)
+                        - transcript: Align frames with speech timestamps, random sample
+                        - interval: Fixed interval based on video duration
+                        - scene: PySceneDetect scene change detection
+
+Translation:
+  --translate {zh,en,ja,ko,es,fr,de,ru}
+                        Translate content to target language (bilingual output)
+                        - zh: 中文
+                        - en: English
+                        - ja: 日本語
+                        - ko: 한국어
+                        - es: Español
+                        - fr: Français
+                        - de: Deutsch
+                        - ru: Русский
+
+Whisper Options:
   --whisper-model {tiny,base,small,medium,large-v3}
                         Whisper model size (default: medium)
   --whisper-device {cuda,cpu}
                         Device for Whisper (default: cuda)
+
+API Options:
   --max-concurrent N    Max concurrent API calls (default: 5)
-  --setup               Create .env template and validate keys
+
+Utility:
+  --setup               Create .env template and validate API keys
   --check-gpu           Check GPU availability
   -v, --verbose         Enable verbose logging
 ```
 
-## Troubleshooting
+### Examples
 
-### CUDA Not Available
 ```bash
-# Check GPU
-python main.py --check-gpu
+# Basic usage
+python main.py "https://www.youtube.com/watch?v=xxx"
 
-# Install PyTorch with CUDA
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# Local video with translation to English
+python main.py "dummy" --local-video "lecture.mp4" --translate en
+
+# Scene detection + Chinese translation + DOCX only
+python main.py "https://www.youtube.com/watch?v=xxx" \
+    --frame-strategy scene \
+    --translate zh \
+    --formats docx
+
+# Fast processing (skip transcription)
+python main.py "https://www.youtube.com/watch?v=xxx" --skip-transcription
+
+# CPU mode (no GPU)
+python main.py "https://www.youtube.com/watch?v=xxx" --whisper-device cpu
 ```
-
-### API Key Errors
-```bash
-# Validate configuration
-python main.py --setup
-
-# Check .env file exists in video_note_system/
-cat .env
-```
-
-### Video Download Fails
-- Check your internet connection
-- For restricted content, export browser cookies:
-  ```bash
-  # Chrome
-  yt-dlp --cookies-from-browser chrome --cookies cookies.txt
-  ```
-
-### Memory Issues
-- Use smaller Whisper model: `--whisper-model small`
-- Use CPU instead: `--whisper-device cpu`
-- Skip analysis: `--skip-analysis`
 
 ## Architecture
 
@@ -192,16 +197,3 @@ cat .env
 ## License
 
 MIT License - feel free to use and modify.
-
-## Contributing
-
-Contributions welcome! Areas for improvement:
-- More video platforms
-- Speaker diarization
-- Better summarization
-- Additional output formats
-- Web UI
-
-## Support
-
-For issues and questions, please check the troubleshooting section or create an issue in the repository.

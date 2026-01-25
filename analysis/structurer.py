@@ -17,6 +17,7 @@ class Structurer:
     def __init__(self):
         """Initialize structurer"""
         self.summary_generator = None
+        self.translator = None
 
     def _get_summary_generator(self):
         """Lazy-load summary generator"""
@@ -25,6 +26,13 @@ class Structurer:
             self.summary_generator = SummaryGenerator()
         return self.summary_generator
 
+    def _get_translator(self):
+        """Lazy-load translator"""
+        if self.translator is None:
+            from utils.translator import Translator
+            self.translator = Translator()
+        return self.translator
+
     def structure(
         self,
         video_info: Dict[str, Any],
@@ -32,7 +40,8 @@ class Structurer:
         frame_analyses: List[Dict[str, Any]],
         summary: str = None,
         keywords: List[str] = None,
-        generate_ai_summary: bool = True
+        generate_ai_summary: bool = True,
+        translate_to: str = None
     ) -> Dict[str, Any]:
         """
         Structure all data into final note format
@@ -44,6 +53,7 @@ class Structurer:
             summary: Video summary (if None and generate_ai_summary=True, will use DeepSeek)
             keywords: Keywords/tags
             generate_ai_summary: Whether to generate AI summary using DeepSeek
+            translate_to: Target language for translation (None = no translation)
 
         Returns:
             Structured note data
@@ -79,10 +89,44 @@ class Structurer:
                 print(f"[AI Summary] Failed: {e}")
                 summary = ""
 
+        # Translation handling
+        title_translated = ""
+        summary_translated = ""
+        
+        if translate_to:
+            print(f"\n[Translation] Translating content to {translate_to}...")
+            try:
+                translator = self._get_translator()
+                if translator.is_available():
+                    # Translate title
+                    title_translated = translator.translate_title(
+                        video_info.get("title", ""),
+                        translate_to
+                    )
+                    print(f"[Translation] Title translated")
+                    
+                    # Translate summary
+                    if summary:
+                        summary_translated = translator.translate_summary(summary, translate_to)
+                        print(f"[Translation] Summary translated")
+                    
+                    # Translate transcript segments
+                    if transcript:
+                        transcript = translator.translate_transcript_segments(
+                            transcript, translate_to
+                        )
+                        print(f"[Translation] Transcript translated ({len(transcript)} segments)")
+                else:
+                    print("[Translation] Skipped (no DeepSeek API key)")
+            except Exception as e:
+                logger.error(f"Translation failed: {e}")
+                print(f"[Translation] Failed: {e}")
+
         # Build structured data
         structured = {
             "metadata": {
                 "title": video_info.get("title", "Untitled"),
+                "title_translated": title_translated,
                 "source": video_info.get("platform", "unknown"),
                 "url": video_info.get("url", ""),
                 "duration": video_info.get("duration", 0),
@@ -90,8 +134,10 @@ class Structurer:
                 "version": "v1.0",
                 "thumbnail": video_info.get("thumbnail", ""),
                 "uploader": video_info.get("uploader", ""),
+                "translate_to": translate_to,
             },
             "summary": summary or "",
+            "summary_translated": summary_translated,
             "keywords": keywords or content.get("topics", []),
             # New structure: full transcript with timestamps and images
             "full_transcript": self._create_full_transcript_with_images(
@@ -111,6 +157,7 @@ class Structurer:
                 "successful_analyses": sum(
                     1 for f in frame_analyses if f.get("success")
                 ),
+                "translated": translate_to is not None,
             },
         }
 
@@ -162,7 +209,8 @@ class Structurer:
                 "type": "text",
                 "timestamp": seg.get("start", 0),
                 "end_time": seg.get("end", 0),
-                "content": seg.get("text", "").strip()
+                "content": seg.get("text", "").strip(),
+                "content_translated": seg.get("text_translated", "").strip() if seg.get("text_translated") else ""
             })
         
         # Add images at their timestamps
@@ -190,11 +238,14 @@ class Structurer:
                         "type": "text",
                         "timestamp": item["timestamp"],
                         "end_time": item["end_time"],
-                        "content": item["content"]
+                        "content": item["content"],
+                        "content_translated": item.get("content_translated", "")
                     }
                 elif item["timestamp"] - current_paragraph["end_time"] < 3.0:
                     # Merge into current paragraph
                     current_paragraph["content"] += " " + item["content"]
+                    if item.get("content_translated"):
+                        current_paragraph["content_translated"] += " " + item.get("content_translated", "")
                     current_paragraph["end_time"] = item["end_time"]
                 else:
                     # Start new paragraph
@@ -204,7 +255,8 @@ class Structurer:
                         "type": "text",
                         "timestamp": item["timestamp"],
                         "end_time": item["end_time"],
-                        "content": item["content"]
+                        "content": item["content"],
+                        "content_translated": item.get("content_translated", "")
                     }
             else:
                 # Image - flush current paragraph first

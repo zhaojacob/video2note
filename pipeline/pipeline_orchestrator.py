@@ -102,7 +102,8 @@ class PipelineOrchestrator:
         local_video: str = None,
         skip_transcription: bool = False,
         skip_analysis: bool = False,
-        frame_strategy: str = "transcript"
+        frame_strategy: str = "transcript",
+        translate_to: str = None
     ) -> Dict[str, Any]:
         """
         Run the complete pipeline
@@ -114,6 +115,7 @@ class PipelineOrchestrator:
             local_video: Path to local video file (skip download)
             skip_transcription: Skip transcription step
             skip_analysis: Skip image analysis step
+            translate_to: Target language for translation (None = no translation)
 
         Returns:
             Dictionary with results and outputs
@@ -124,6 +126,10 @@ class PipelineOrchestrator:
         print(f"[CONFIG] Model: {self.whisper_model_size}, Device: {self.whisper_device}")
         print(f"[CONFIG] Output formats: {', '.join(output_formats or ['docx', 'markdown', 'json'])}")
         print(f"[CONFIG] Max concurrent API calls: {self.max_concurrent_api}")
+        if translate_to:
+            from utils.translator import SUPPORTED_LANGUAGES
+            lang_name = SUPPORTED_LANGUAGES.get(translate_to, translate_to)
+            print(f"[CONFIG] Translation: Enabled -> {lang_name}")
         print("=" * 60)
 
         results = {
@@ -319,6 +325,7 @@ class PipelineOrchestrator:
                 video_info=video_info,
                 transcript=transcript,
                 frame_analyses=frame_analyses,
+                translate_to=translate_to,
             )
 
             print(f"[OK] Created {len(structured_data['sections'])} sections")

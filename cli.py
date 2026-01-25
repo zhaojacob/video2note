@@ -36,6 +36,12 @@ Examples:
 
   # Use scene detection for fewer frames (saves API calls)
   python main.py "https://www.youtube.com/watch?v=xxx" --frame-strategy scene
+
+  # Translate content to English (bilingual output)
+  python main.py "https://www.youtube.com/watch?v=xxx" --translate en
+
+  # Translate to Chinese
+  python main.py "https://www.youtube.com/watch?v=xxx" --translate zh
         """
     )
 
@@ -85,6 +91,14 @@ Examples:
         choices=["transcript", "interval", "scene"],
         default="transcript",
         help="Frame extraction strategy: transcript (align to speech), interval (fixed interval), scene (scene detection, fewer frames) (default: transcript)"
+    )
+
+    # Translation options
+    parser.add_argument(
+        "--translate",
+        choices=["zh", "en", "ja", "ko", "es", "fr", "de", "ru"],
+        default=None,
+        help="Translate content to target language (zh=Chinese, en=English, ja=Japanese, ko=Korean, etc.)"
     )
 
     # Whisper options
@@ -237,7 +251,8 @@ def main():
             local_video=args.local_video,
             skip_transcription=args.skip_transcription,
             skip_analysis=args.skip_analysis,
-            frame_strategy=args.frame_strategy
+            frame_strategy=args.frame_strategy,
+            translate_to=args.translate
         )
 
         if results["success"]:

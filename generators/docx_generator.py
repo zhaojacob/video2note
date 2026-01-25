@@ -66,8 +66,12 @@ class DocxGenerator:
         # Set document properties
         self._setup_styles(doc)
 
-        # Add title
-        self._add_title(doc, data["metadata"]["title"])
+        # Add title (with translation if available)
+        self._add_title(
+            doc, 
+            data["metadata"]["title"],
+            data["metadata"].get("title_translated", "")
+        )
 
         # Add metadata line (时间 | 来源 | 作者 | 链接)
         self._add_metadata_line(doc, data["metadata"])
@@ -75,8 +79,12 @@ class DocxGenerator:
         # Add version line
         self._add_version_line(doc, data["metadata"])
 
-        # Add summary section
-        self._add_summary(doc, data.get("summary", ""))
+        # Add summary section (with translation if available)
+        self._add_summary(
+            doc, 
+            data.get("summary", ""),
+            data.get("summary_translated", "")
+        )
 
         # Add transcript section with images
         self._add_transcript_section(
@@ -127,13 +135,20 @@ class DocxGenerator:
         # Set Chinese font
         run._element.rPr.rFonts.set(qn('w:eastAsia'), FONT_CHINESE)
 
-    def _add_title(self, doc: Document, title: str):
-        """Add document title"""
+    def _add_title(self, doc: Document, title: str, title_translated: str = ""):
+        """Add document title with optional translation"""
         heading = doc.add_heading(title, level=1)
         heading.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
 
         for run in heading.runs:
             self._set_run_font(run, size=FONT_SIZE_TITLE, bold=True)
+        
+        # Add translated title if available
+        if title_translated:
+            p = doc.add_paragraph()
+            run = p.add_run(title_translated)
+            self._set_run_font(run, size=Pt(14), color=COLOR_GRAY, italic=True)
+            p.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
 
     def _add_metadata_line(self, doc: Document, metadata: Dict[str, Any]):
         """Add single metadata line: 时间 | 来源 | 作者 | 链接"""
@@ -182,8 +197,8 @@ class DocxGenerator:
         p.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
         doc.add_paragraph()  # Empty line
 
-    def _add_summary(self, doc: Document, summary: str):
-        """Add summary section"""
+    def _add_summary(self, doc: Document, summary: str, summary_translated: str = ""):
+        """Add summary section with optional translation"""
         heading = doc.add_heading("摘要", level=2)
         for run in heading.runs:
             self._set_run_font(run, size=FONT_SIZE_HEADING, bold=True)
@@ -193,6 +208,13 @@ class DocxGenerator:
             run = p.add_run(summary)
             self._set_run_font(run)
             p.paragraph_format.line_spacing = 1.5
+            
+            # Add translated summary
+            if summary_translated:
+                p2 = doc.add_paragraph()
+                run2 = p2.add_run(summary_translated)
+                self._set_run_font(run2, color=COLOR_GRAY, italic=True)
+                p2.paragraph_format.line_spacing = 1.5
         else:
             p = doc.add_paragraph()
             run = p.add_run("（摘要生成中或未配置 DeepSeek API）")
@@ -223,11 +245,12 @@ class DocxGenerator:
             self._set_run_font(run, color=COLOR_GRAY, italic=True)
 
     def _render_full_transcript(self, doc: Document, items: List[Dict[str, Any]]):
-        """Render full transcript with embedded images"""
+        """Render full transcript with embedded images and translations"""
         for item in items:
             if item["type"] == "text":
                 timestamp = self._format_timestamp(item["timestamp"])
                 content = item.get("content", "").strip()
+                content_translated = item.get("content_translated", "").strip()
                 
                 if content:
                     p = doc.add_paragraph()
@@ -238,6 +261,15 @@ class DocxGenerator:
                     content_run = p.add_run(content)
                     self._set_run_font(content_run)
                     p.paragraph_format.line_spacing = 1.5
+                    
+                    # Add translation if available
+                    if content_translated:
+                        p2 = doc.add_paragraph()
+                        # Indent for translation
+                        p2.paragraph_format.left_indent = Inches(0.3)
+                        trans_run = p2.add_run(content_translated)
+                        self._set_run_font(trans_run, color=COLOR_GRAY, italic=True)
+                        p2.paragraph_format.line_spacing = 1.5
                     
             elif item["type"] == "image":
                 self._add_transcript_image(doc, item)
