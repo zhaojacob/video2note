@@ -203,13 +203,18 @@ class MarkdownGenerator:
             "",
         ]
         
+        # Extract images from full_transcript for later insertion
+        images = []
+        if full_transcript:
+            images = [item for item in full_transcript if item.get("type") == "image"]
+        
         # Prefer chapters (with titles and structured content)
         if chapters:
-            lines.extend(self._render_chapters(chapters))
+            lines.extend(self._render_chapters_with_images(chapters, images, relative_images))
         # Fallback to polished text (with punctuation, paragraphs)
         elif polished_text:
-            lines.extend(self._render_polished_text(polished_text))
-        # Fallback to full_transcript format
+            lines.extend(self._render_polished_text_with_images(polished_text, images, relative_images))
+        # Fallback to full_transcript format (has timestamps and images)
         elif full_transcript:
             lines.extend(self._render_full_transcript(full_transcript, relative_images))
         elif sections:
@@ -221,21 +226,43 @@ class MarkdownGenerator:
         
         return lines
 
-    def _render_chapters(self, chapters: List[Dict[str, Any]]) -> List[str]:
-        """Render chapters with titles and content"""
+    def _render_chapters_with_images(
+        self, 
+        chapters: List[Dict[str, Any]],
+        images: List[Dict[str, Any]],
+        relative_images: bool
+    ) -> List[str]:
+        """Render chapters with titles, content, and distributed images"""
         lines = []
+        
+        num_chapters = len(chapters)
+        num_images = len(images)
+        
+        # Distribute images evenly across chapters
+        images_per_chapter = max(1, num_images // num_chapters) if num_chapters > 0 else num_images
+        image_index = 0
         
         for i, chapter in enumerate(chapters):
             title = chapter.get('title', f'章节 {i + 1}')
             content = chapter.get('content', '')
             
-            # Add chapter title as heading level 3
+            # Add chapter title
             lines.append(f"### {title}")
             lines.append("")
             
+            # Add images for this chapter
+            chapter_images_count = images_per_chapter
+            if i == num_chapters - 1:
+                chapter_images_count = num_images - image_index
+            
+            for j in range(chapter_images_count):
+                if image_index < num_images:
+                    image = images[image_index]
+                    lines.extend(self._render_image_item(image, relative_images))
+                    image_index += 1
+            
             # Add chapter content
             if content:
-                # Split content into paragraphs
                 paragraphs = content.split('\n\n') if '\n\n' in content else content.split('\n')
                 
                 for para_text in paragraphs:
@@ -244,26 +271,34 @@ class MarkdownGenerator:
                         continue
                     
                     lines.append(para_text)
-                    lines.append("")  # Blank line between paragraphs
+                    lines.append("")
             
-            lines.append("")  # Extra spacing between chapters
+            lines.append("")
         
         return lines
 
-    def _render_polished_text(self, text: str) -> List[str]:
-        """Render polished transcript text with proper paragraphs"""
+    def _render_polished_text_with_images(
+        self,
+        text: str,
+        images: List[Dict[str, Any]],
+        relative_images: bool
+    ) -> List[str]:
+        """Render polished text with images inserted"""
         lines = []
         
-        # Check if text contains chapter markers (## Title)
+        # Check if text contains chapter markers
         if '## ' in text:
-            # Parse and render as chapters
             from utils.text_polisher import TextPolisher
             polisher = TextPolisher()
             chapters = polisher._parse_chapters(text)
             if chapters:
-                return self._render_chapters(chapters)
+                return self._render_chapters_with_images(chapters, images, relative_images)
         
-        # Split by double newlines (paragraphs) or single newlines
+        # Add all images at the beginning
+        for image in images:
+            lines.extend(self._render_image_item(image, relative_images))
+        
+        # Then add text paragraphs
         paragraphs = text.split('\n\n') if '\n\n' in text else text.split('\n')
         
         for para_text in paragraphs:
@@ -272,9 +307,35 @@ class MarkdownGenerator:
                 continue
             
             lines.append(para_text)
-            lines.append("")  # Blank line between paragraphs
+            lines.append("")
         
         return lines
+
+    def _render_image_item(self, image: Dict[str, Any], relative_images: bool) -> List[str]:
+        """Render a single image item"""
+        lines = []
+        timestamp = self._format_timestamp(image.get("timestamp", 0))
+        image_path = image.get("path", "")
+        
+        if image_path:
+            if relative_images:
+                image_path = Path(image_path).name
+            lines.append(f"![{timestamp}]({image_path})")
+        
+        description = image.get("description", "")
+        if description:
+            lines.append(f"*{timestamp}: {description}*")
+        
+        lines.append("")
+        return lines
+
+    def _render_chapters(self, chapters: List[Dict[str, Any]]) -> List[str]:
+        """Render chapters without images"""
+        return self._render_chapters_with_images(chapters, [], False)
+
+    def _render_polished_text(self, text: str) -> List[str]:
+        """Render polished text without images"""
+        return self._render_polished_text_with_images(text, [], False)
 
     def _render_full_transcript(
         self,

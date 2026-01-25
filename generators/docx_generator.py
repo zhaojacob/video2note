@@ -87,13 +87,14 @@ class DocxGenerator:
         )
 
         # Add transcript section with images
-        # Use chapters if available (with titles), otherwise polished_text or raw transcript
+        # Use chapters if available (with titles), otherwise full_transcript with timestamps
         self._add_transcript_section(
             doc,
             data.get("full_transcript", []),
             data.get("sections", []),
             data.get("polished_text", ""),
-            data.get("chapters", [])
+            data.get("chapters", []),
+            data.get("statistics", {}).get("total_frames", 0)
         )
 
         # Add statistics
@@ -231,20 +232,26 @@ class DocxGenerator:
         full_transcript: List[Dict[str, Any]],
         sections: List[Dict[str, Any]],
         polished_text: str = "",
-        chapters: List[Dict[str, Any]] = None
+        chapters: List[Dict[str, Any]] = None,
+        total_frames: int = 0
     ):
         """Add transcript section with images"""
         heading = doc.add_heading("正文", level=2)
         for run in heading.runs:
             self._set_run_font(run, size=FONT_SIZE_HEADING, bold=True)
         
+        # Extract images from full_transcript for later insertion
+        images = []
+        if full_transcript:
+            images = [item for item in full_transcript if item.get("type") == "image"]
+        
         # Prefer chapters (with titles and structured content)
         if chapters:
-            self._render_chapters(doc, chapters)
+            self._render_chapters_with_images(doc, chapters, images)
         # Fallback to polished text (with punctuation, paragraphs)
         elif polished_text:
-            self._render_polished_text(doc, polished_text)
-        # Fallback to full_transcript format
+            self._render_polished_text_with_images(doc, polished_text, images)
+        # Fallback to full_transcript format (has timestamps and images)
         elif full_transcript:
             self._render_full_transcript(doc, full_transcript)
         elif sections:
@@ -255,9 +262,21 @@ class DocxGenerator:
             run = p.add_run("（无转录内容）")
             self._set_run_font(run, color=COLOR_GRAY, italic=True)
 
-    def _render_chapters(self, doc: Document, chapters: List[Dict[str, Any]]):
-        """Render chapters with titles and content"""
+    def _render_chapters_with_images(
+        self, 
+        doc: Document, 
+        chapters: List[Dict[str, Any]],
+        images: List[Dict[str, Any]]
+    ):
+        """Render chapters with titles, content, and distributed images"""
         from docx.shared import RGBColor
+        
+        num_chapters = len(chapters)
+        num_images = len(images)
+        
+        # Distribute images evenly across chapters
+        images_per_chapter = max(1, num_images // num_chapters) if num_chapters > 0 else num_images
+        image_index = 0
         
         for i, chapter in enumerate(chapters):
             title = chapter.get('title', f'章节 {i + 1}')
@@ -266,16 +285,25 @@ class DocxGenerator:
             # Add chapter title as heading level 3
             chapter_heading = doc.add_heading(title, level=3)
             for run in chapter_heading.runs:
-                # Style: bold, slightly larger, dark blue color for emphasis
                 run.font.name = FONT_ENGLISH
-                run.font.size = Pt(14)  # 14pt for chapter titles
+                run.font.size = Pt(14)
                 run.font.bold = True
-                run.font.color.rgb = RGBColor(0, 51, 102)  # Dark blue
+                run.font.color.rgb = RGBColor(0, 51, 102)
                 run._element.rPr.rFonts.set(qn('w:eastAsia'), FONT_CHINESE)
+            
+            # Add images for this chapter (distribute evenly)
+            chapter_images_count = images_per_chapter
+            # Last chapter gets remaining images
+            if i == num_chapters - 1:
+                chapter_images_count = num_images - image_index
+            
+            for j in range(chapter_images_count):
+                if image_index < num_images:
+                    self._add_transcript_image(doc, images[image_index])
+                    image_index += 1
             
             # Add chapter content
             if content:
-                # Split content into paragraphs
                 paragraphs = content.split('\n\n') if '\n\n' in content else content.split('\n')
                 
                 for para_text in paragraphs:
@@ -284,29 +312,35 @@ class DocxGenerator:
                         continue
                     
                     p = doc.add_paragraph()
-                    # First line indent for Chinese style
                     p.paragraph_format.first_line_indent = Inches(0.5)
                     p.paragraph_format.line_spacing = 1.5
                     
                     run = p.add_run(para_text)
                     self._set_run_font(run)
             
-            # Add spacing between chapters
             doc.add_paragraph()
 
-    def _render_polished_text(self, doc: Document, text: str):
-        """Render polished transcript text with proper paragraphs"""
-        # Check if text contains chapter markers (## Title)
+    def _render_polished_text_with_images(
+        self,
+        doc: Document,
+        text: str,
+        images: List[Dict[str, Any]]
+    ):
+        """Render polished text with images inserted"""
+        # Check if text contains chapter markers
         if '## ' in text:
-            # Parse and render as chapters
             from utils.text_polisher import TextPolisher
             polisher = TextPolisher()
             chapters = polisher._parse_chapters(text)
             if chapters:
-                self._render_chapters(doc, chapters)
+                self._render_chapters_with_images(doc, chapters, images)
                 return
         
-        # Split by double newlines (paragraphs) or single newlines
+        # Add all images at the beginning
+        for image in images:
+            self._add_transcript_image(doc, image)
+        
+        # Then add text paragraphs
         paragraphs = text.split('\n\n') if '\n\n' in text else text.split('\n')
         
         for para_text in paragraphs:
@@ -315,12 +349,19 @@ class DocxGenerator:
                 continue
             
             p = doc.add_paragraph()
-            # First line indent for Chinese style
             p.paragraph_format.first_line_indent = Inches(0.5)
             p.paragraph_format.line_spacing = 1.5
             
             run = p.add_run(para_text)
             self._set_run_font(run)
+
+    def _render_chapters(self, doc: Document, chapters: List[Dict[str, Any]]):
+        """Render chapters with titles and content (no images)"""
+        self._render_chapters_with_images(doc, chapters, [])
+
+    def _render_polished_text(self, doc: Document, text: str):
+        """Render polished transcript text with proper paragraphs (no images)"""
+        self._render_polished_text_with_images(doc, text, [])
 
     def _render_full_transcript(self, doc: Document, items: List[Dict[str, Any]]):
         """Render full transcript with embedded images and translations"""

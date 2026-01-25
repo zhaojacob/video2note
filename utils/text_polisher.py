@@ -23,6 +23,7 @@ class TextPolisher:
         self.model = DEEPSEEK_CONFIG.get("model", "deepseek-chat")
         self.base_url = DEEPSEEK_CONFIG.get("base_url", "https://api.deepseek.com")
         self.timeout = DEEPSEEK_CONFIG.get("timeout", 300)  # Longer timeout for long text
+        self.max_tokens_limit = 8000  # DeepSeek limit is 8192, leave some buffer
         
         if not self.api_key:
             logger.warning("DeepSeek API key not found. Text polishing will be skipped.")
@@ -39,6 +40,178 @@ class TextPolisher:
         """Check if polisher is available"""
         return self.client is not None
 
+    def polish_segments(
+        self,
+        segments: List[Dict[str, Any]],
+        source_language: str = "zh"
+    ) -> List[Dict[str, Any]]:
+        """
+        Polish transcript segments while preserving timestamps.
+        Each segment's text gets punctuation added.
+        
+        Args:
+            segments: List of transcript segments with 'start', 'end', 'text'
+            source_language: Source language of the audio
+            
+        Returns:
+            List of segments with polished 'text' field
+        """
+        if not self.client or not segments:
+            return segments
+        
+        # Combine all text for batch processing
+        texts = [seg.get('text', '').strip() for seg in segments]
+        combined_text = '\n'.join(f"[{i}] {t}" for i, t in enumerate(texts) if t)
+        
+        # Determine if we should convert to simplified Chinese
+        is_chinese = source_language.lower() in ['zh', 'zh-cn', 'zh-tw', 'chinese', 'mandarin', 'cantonese', 'auto']
+        
+        simplify_instruction = ""
+        if is_chinese:
+            simplify_instruction = "3. 将繁体字转换为简体字\n"
+        
+        system_prompt = """你是一个文本标点符号添加助手。用户会给你一系列带编号的语音转录片段，你需要为每个片段添加合适的标点符号。
+
+要求：
+- 保持原有的编号格式 [数字]
+- 只添加标点符号，不要改变原文内容
+- 修正明显的语音识别错误（同音字）
+- 直接输出处理后的文本，不要有任何解释"""
+
+        user_prompt = f"""请为以下语音转录片段添加标点符号。
+
+要求：
+1. 添加标点符号（句号、逗号、问号、感叹号等）
+2. 保持 [数字] 编号格式不变
+{simplify_instruction}4. 不要删除或添加实质性内容
+
+转录片段：
+{combined_text}
+
+添加标点后："""
+
+        try:
+            logger.info(f"Polishing {len(segments)} segments ({len(combined_text)} chars)...")
+            
+            # Split into chunks if text is too long
+            max_input_chars = 15000  # Leave room for prompt and response
+            if len(combined_text) > max_input_chars:
+                return self._polish_segments_in_chunks(segments, source_language)
+            
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                max_tokens=self.max_tokens_limit,
+                temperature=0.1,
+            )
+            
+            polished_text = response.choices[0].message.content
+            if not polished_text:
+                logger.warning("Empty response, returning original segments")
+                return segments
+            
+            # Parse polished text back into segments
+            polished_segments = self._parse_polished_segments(polished_text, segments)
+            logger.info(f"Segments polished successfully")
+            return polished_segments
+            
+        except Exception as e:
+            logger.error(f"Segment polishing failed: {e}")
+            return segments
+
+    def _polish_segments_in_chunks(
+        self,
+        segments: List[Dict[str, Any]],
+        source_language: str
+    ) -> List[Dict[str, Any]]:
+        """Polish segments in chunks when text is too long"""
+        chunk_size = 200  # segments per chunk
+        polished_segments = []
+        
+        for i in range(0, len(segments), chunk_size):
+            chunk = segments[i:i + chunk_size]
+            logger.info(f"Processing chunk {i//chunk_size + 1} ({len(chunk)} segments)")
+            polished_chunk = self._polish_single_chunk(chunk, source_language, i)
+            polished_segments.extend(polished_chunk)
+        
+        return polished_segments
+
+    def _polish_single_chunk(
+        self,
+        segments: List[Dict[str, Any]],
+        source_language: str,
+        start_index: int
+    ) -> List[Dict[str, Any]]:
+        """Polish a single chunk of segments"""
+        if not self.client or not segments:
+            return segments
+        
+        texts = [seg.get('text', '').strip() for seg in segments]
+        combined_text = '\n'.join(f"[{i}] {t}" for i, t in enumerate(texts) if t)
+        
+        is_chinese = source_language.lower() in ['zh', 'zh-cn', 'zh-tw', 'chinese', 'mandarin', 'cantonese', 'auto']
+        simplify_instruction = "3. 将繁体字转换为简体字\n" if is_chinese else ""
+        
+        system_prompt = """你是一个文本标点符号添加助手。用户会给你一系列带编号的语音转录片段，你需要为每个片段添加合适的标点符号。保持编号格式，直接输出结果。"""
+
+        user_prompt = f"""为以下转录片段添加标点：
+1. 添加标点符号
+2. 保持 [数字] 编号
+{simplify_instruction}
+{combined_text}"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                max_tokens=self.max_tokens_limit,
+                temperature=0.1,
+            )
+            
+            polished_text = response.choices[0].message.content
+            if not polished_text:
+                return segments
+            
+            return self._parse_polished_segments(polished_text, segments)
+            
+        except Exception as e:
+            logger.error(f"Chunk polishing failed: {e}")
+            return segments
+
+    def _parse_polished_segments(
+        self,
+        polished_text: str,
+        original_segments: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Parse polished text back into segment format"""
+        # Extract polished texts by index
+        pattern = r'\[(\d+)\]\s*(.+?)(?=\[\d+\]|$)'
+        matches = re.findall(pattern, polished_text, re.DOTALL)
+        
+        polished_map = {}
+        for idx_str, text in matches:
+            try:
+                idx = int(idx_str)
+                polished_map[idx] = text.strip()
+            except ValueError:
+                continue
+        
+        # Update segments with polished text
+        result = []
+        for i, seg in enumerate(original_segments):
+            new_seg = seg.copy()
+            if i in polished_map:
+                new_seg['text'] = polished_map[i]
+            result.append(new_seg)
+        
+        return result
+
     def polish_transcript(
         self, 
         text: str, 
@@ -46,10 +219,11 @@ class TextPolisher:
         source_language: str = "zh"
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """
-        Polish transcribed text: add punctuation, paragraphs, organize into chapters
+        Polish transcribed text: add punctuation, paragraphs, organize into chapters.
+        Used for document generation (DOCX/Markdown).
         
         Args:
-            text: Raw transcribed text
+            text: Raw transcribed text (full text without timestamps)
             duration_minutes: Video duration in minutes (for chapter limit calculation)
             source_language: Source language of the audio (zh/en/ja/ko etc.)
             
@@ -69,10 +243,8 @@ class TextPolisher:
         max_chapters = max(1, int(duration_minutes / 15)) if duration_minutes > 0 else 10
         
         # Determine if we should convert to simplified Chinese
-        # Only for Chinese audio (zh, zh-cn, zh-tw, chinese, mandarin, cantonese)
         is_chinese = source_language.lower() in ['zh', 'zh-cn', 'zh-tw', 'chinese', 'mandarin', 'cantonese', 'auto']
         
-        # Build the prompt based on language
         simplify_instruction = ""
         if is_chinese:
             simplify_instruction = "4. 将所有繁体字转换为简体字\n"
@@ -109,14 +281,21 @@ class TextPolisher:
         try:
             logger.info(f"Polishing text ({len(text)} chars, max {max_chapters} chapters)...")
             
+            # If text is too long, truncate for chapter organization
+            # (segments are already polished separately)
+            if len(text) > 20000:
+                logger.warning(f"Text too long ({len(text)} chars), truncating to 20000 for chapter organization")
+                text = text[:20000] + "..."
+                user_prompt = user_prompt.replace(text[:20000] + "...", text)
+            
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                max_tokens=min(len(text) * 3, 16000),  # Allow expansion, cap at 16k
-                temperature=0.1,  # Low temperature for consistency
+                max_tokens=self.max_tokens_limit,
+                temperature=0.1,
             )
             
             polished = response.choices[0].message.content
