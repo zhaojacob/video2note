@@ -183,22 +183,34 @@ class Transcriber:
         self,
         audio_path: str | Path,
         chunk_length: int = 30 * 60,  # 30 minutes
+        cache_dir: Path = None,
         **kwargs
     ) -> List[Dict[str, Any]]:
         """
-        Transcribe long audio by splitting into chunks
+        Transcribe long audio by splitting into chunks with checkpoint support
 
         Args:
             audio_path: Path to audio file
             chunk_length: Chunk length in seconds
+            cache_dir: Directory to cache chunk transcripts (for resume)
             **kwargs: Additional arguments for transcribe()
 
         Returns:
             List of transcription segments with adjusted timestamps
         """
+        import json
         from core.audio_extractor import AudioExtractor
 
         audio_path = Path(audio_path)
+        
+        # Set up cache directory
+        if cache_dir is None:
+            cache_dir = OUTPUT_DIRS["transcripts"]
+        cache_dir = Path(cache_dir)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Cache file naming based on audio file
+        cache_prefix = f"{audio_path.stem}_transcript"
 
         # Get audio duration
         audio_extractor = AudioExtractor()
@@ -220,19 +232,41 @@ class Transcriber:
         audio = AudioSegment.from_file(str(audio_path))
         chunk_length_ms = chunk_length * 1000
         chunks = make_chunks(audio, chunk_length_ms)
+        total_chunks = len(chunks)
 
-        logger.info(f"Created {len(chunks)} chunks")
+        logger.info(f"Created {total_chunks} chunks")
 
-        # Transcribe each chunk
+        # Transcribe each chunk with checkpoint
         all_segments = []
         time_offset = 0
 
         for i, chunk in enumerate(chunks):
-            logger.info(f"Transcribing chunk {i+1}/{len(chunks)}")
+            part_num = i + 1
+            cache_file = cache_dir / f"{cache_prefix}_part{part_num}.json"
+            
+            # Check if this chunk was already transcribed
+            if cache_file.exists():
+                logger.info(f"Loading cached transcript for chunk {part_num}/{total_chunks}")
+                print(f"\n[CACHE] Loading part {part_num}/{total_chunks} from cache...")
+                try:
+                    with open(cache_file, 'r', encoding='utf-8') as f:
+                        cached_data = json.load(f)
+                    segments = cached_data.get("segments", [])
+                    chunk_duration = cached_data.get("chunk_duration", len(chunk) / 1000.0)
+                    all_segments.extend(segments)
+                    time_offset += chunk_duration
+                    print(f"[CACHE] Loaded {len(segments)} segments from part {part_num}")
+                    continue
+                except Exception as e:
+                    logger.warning(f"Failed to load cache, re-transcribing: {e}")
+            
+            logger.info(f"Transcribing chunk {part_num}/{total_chunks}")
 
             # Save chunk to temporary file
             chunk_path = OUTPUT_DIRS["audio"] / f"{audio_path.stem}_chunk{i}.wav"
             chunk.export(str(chunk_path), format="wav")
+            
+            chunk_duration = len(chunk) / 1000.0  # seconds
 
             try:
                 # Transcribe chunk
@@ -243,8 +277,24 @@ class Transcriber:
                     segment["start"] += time_offset
                     segment["end"] += time_offset
 
+                # Save checkpoint immediately after transcription
+                checkpoint_data = {
+                    "part": part_num,
+                    "total_parts": total_chunks,
+                    "chunk_duration": chunk_duration,
+                    "time_offset_start": time_offset,
+                    "segments": segments,
+                    "segment_count": len(segments)
+                }
+                
+                with open(cache_file, 'w', encoding='utf-8') as f:
+                    json.dump(checkpoint_data, f, ensure_ascii=False, indent=2)
+                
+                logger.info(f"Saved checkpoint: {cache_file.name} ({len(segments)} segments)")
+                print(f"[CHECKPOINT] Saved part {part_num}/{total_chunks}: {len(segments)} segments")
+
                 all_segments.extend(segments)
-                time_offset += len(chunk) / 1000.0  # Convert to seconds
+                time_offset += chunk_duration
 
             finally:
                 # Clean up temporary file
