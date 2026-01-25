@@ -58,11 +58,12 @@ class Transcriber:
         # Check if model files exist (支持两种目录格式)
         import os
         from pathlib import Path
+        from config.settings import MODELS_DIR
         
         # 格式1: 直接下载的平铺格式 (faster-whisper-medium/)
-        local_model_dir = OUTPUT_DIRS["transcripts"] / "models" / f"faster-whisper-{self.model_size}"
+        local_model_dir = MODELS_DIR / f"faster-whisper-{self.model_size}"
         # 格式2: HuggingFace 缓存格式 (models--Systran--faster-whisper-medium/)
-        hf_cache_dir = OUTPUT_DIRS["transcripts"] / "models" / f"models--Systran--faster-whisper-{self.model_size}"
+        hf_cache_dir = MODELS_DIR / f"models--Systran--faster-whisper-{self.model_size}"
         
         # 检查本地平铺格式是否存在 model.bin
         local_model_exists = (local_model_dir / "model.bin").exists()
@@ -93,7 +94,7 @@ class Transcriber:
             model_path,
             device=self.device,
             compute_type=self.compute_type,
-            download_root=str(OUTPUT_DIRS["transcripts"] / "models")
+            download_root=str(MODELS_DIR)
         )
 
         if not model_found:

@@ -4,6 +4,9 @@
 # Output directory (generated files)
 output/
 
+# Models directory (whisper models, too large for git)
+models/
+
 # Python cache
 __pycache__/
 *.py[cod]
@@ -15,7 +18,6 @@ __pycache__/
 *.pt
 *.pth
 *.onnx
-models/
 
 # Distribution / packaging
 .Python

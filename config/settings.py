@@ -1,5 +1,5 @@
 """
-Global configuration for video note generation system
+Global configuration for video2note system
 """
 import os
 from pathlib import Path
@@ -7,6 +7,10 @@ from pathlib import Path
 # Project root
 PROJECT_ROOT = Path(__file__).parent.parent
 OUTPUT_DIR = PROJECT_ROOT / "output"
+MODELS_DIR = PROJECT_ROOT / "models"  # Whisper models directory
+
+# Create directories
+MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Create output subdirectories
 OUTPUT_DIRS = {

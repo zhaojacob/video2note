@@ -1,4 +1,4 @@
-# Video Note Generation System
+# video2note
 
 An intelligent system that automatically generates structured, illustrated notes from videos. Supports YouTube and Bilibili platforms with GPU-accelerated transcription and multi-modal AI analysis.
 
