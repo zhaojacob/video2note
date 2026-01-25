@@ -55,11 +55,16 @@ class AudioExtractor:
         if not video_path.exists():
             raise FileNotFoundError(f"Video file not found: {video_path}")
 
-        logger.info(f"Extracting audio from: {video_path.name}")
-
         # Determine output path
         output_filename = f"{video_path.stem}.{audio_format}"
         output_path = self.output_dir / output_filename
+
+        # Check if audio already exists (cache)
+        if output_path.exists():
+            logger.info(f"Audio already exists, skipping extraction: {output_path.name}")
+            return output_path
+
+        logger.info(f"Extracting audio from: {video_path.name}")
 
         try:
             # Method 1: Use pydub (supports more formats)
