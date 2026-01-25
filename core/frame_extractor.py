@@ -41,22 +41,21 @@ class FrameExtractor:
     def extract_frames_by_interval(
         self,
         video_path: str | Path,
-        interval_sec: float = None
+        interval_sec: float = None,
+        max_frames: int = 5
     ) -> List[Dict[str, Any]]:
         """
         Extract frames at regular intervals
 
         Args:
             video_path: Path to video file
-            interval_sec: Interval in seconds between frames
+            interval_sec: Interval in seconds between frames (auto-calculated if None)
+            max_frames: Maximum number of frames to extract (default: 5)
 
         Returns:
             List of frame dictionaries
         """
         video_path = Path(video_path)
-        interval_sec = interval_sec or FRAME_CONFIG.get("interval_sec", 10.0)
-
-        logger.info(f"Extracting frames every {interval_sec} seconds")
 
         cap = cv2.VideoCapture(str(video_path))
 
@@ -67,6 +66,12 @@ class FrameExtractor:
             fps = cap.get(cv2.CAP_PROP_FPS)
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             duration = total_frames / fps if fps > 0 else 0
+
+            # Auto-calculate interval to get exactly max_frames evenly distributed
+            if interval_sec is None:
+                interval_sec = duration / (max_frames + 1)  # +1 to avoid first/last frame edges
+            
+            logger.info(f"Extracting frames every {interval_sec:.1f} seconds (max {max_frames} frames)")
 
             interval_frames = int(interval_sec * fps)
             frames = []
@@ -93,6 +98,12 @@ class FrameExtractor:
                 else:
                     logger.warning(f"Failed to extract frame {frame_number}")
 
+            # Limit to max_frames (evenly sample if exceeded)
+            if len(frames) > max_frames:
+                indices = np.linspace(0, len(frames) - 1, max_frames, dtype=int)
+                frames = [frames[i] for i in indices]
+                logger.info(f"Sampled down to {len(frames)} frames")
+
             logger.info(f"Extracted {len(frames)} frames")
 
             return frames
@@ -104,7 +115,8 @@ class FrameExtractor:
         self,
         video_path: str | Path,
         transcript: List[Dict[str, Any]],
-        interval_sec: float = 10.0
+        interval_sec: float = 10.0,
+        max_frames: int = 5
     ) -> List[Dict[str, Any]]:
         """
         Extract frames aligned with transcript segments
@@ -113,13 +125,14 @@ class FrameExtractor:
             video_path: Path to video file
             transcript: List of transcript segments
             interval_sec: Minimum interval between frames
+            max_frames: Maximum number of frames to extract (default: 5)
 
         Returns:
             List of frame dictionaries
         """
         video_path = Path(video_path)
 
-        logger.info(f"Extracting frames aligned with {len(transcript)} transcript segments")
+        logger.info(f"Extracting frames aligned with {len(transcript)} transcript segments (max {max_frames})")
 
         cap = cv2.VideoCapture(str(video_path))
 
@@ -161,6 +174,14 @@ class FrameExtractor:
 
                 else:
                     logger.warning(f"Failed to extract frame at {timestamp:.2f}s")
+
+            # Randomly sample if exceeded max_frames
+            if len(frames) > max_frames:
+                sampled_frames = random.sample(frames, max_frames)
+                # Sort by timestamp to maintain chronological order
+                sampled_frames.sort(key=lambda x: x["timestamp"])
+                logger.info(f"Randomly sampled {len(sampled_frames)} frames from {len(frames)} candidates")
+                frames = sampled_frames
 
             logger.info(f"Extracted {len(frames)} frames from transcript")
 

@@ -101,13 +101,15 @@ class PipelineOrchestrator:
         output_formats: List[str] = None,
         local_video: str = None,
         skip_transcription: bool = False,
-        skip_analysis: bool = False
+        skip_analysis: bool = False,
+        frame_strategy: str = "transcript"
     ) -> Dict[str, Any]:
         """
         Run the complete pipeline
 
         Args:
             video_url: Video URL (or dummy if using local_video)
+            frame_strategy: Frame extraction strategy ('transcript', 'interval', 'scene')
             output_formats: List of output formats (docx, markdown, json)
             local_video: Path to local video file (skip download)
             skip_transcription: Skip transcription step
@@ -173,6 +175,33 @@ class PipelineOrchestrator:
                 transcript = transcriber.transcribe_long_audio(str(audio_path))
                 print(" Complete!")
                 print(f"[OK] Transcription: {len(transcript)} segments")
+                
+                # Save transcript to JSON and TXT files
+                from config.settings import OUTPUT_DIRS
+                from utils.file_handler import sanitize_filename
+                
+                # Generate filename with timestamp (same as docx naming)
+                base_name = sanitize_filename(video_info.get("title", "video"))
+                timestamp_suffix = datetime.now().strftime("%Y%m%d_%H%M%S")
+                transcript_base = f"{base_name}_{timestamp_suffix}"
+                
+                # Save JSON format
+                json_path = OUTPUT_DIRS["transcripts"] / f"{transcript_base}.json"
+                with open(json_path, "w", encoding="utf-8") as f:
+                    json.dump(transcript, f, ensure_ascii=False, indent=2)
+                print(f"[OK] Transcript JSON: {json_path}")
+                
+                # Save TXT format (plain text with timestamps)
+                txt_path = OUTPUT_DIRS["transcripts"] / f"{transcript_base}.txt"
+                with open(txt_path, "w", encoding="utf-8") as f:
+                    f.write(f"# {video_info.get('title', 'Video Transcript')}\n")
+                    f.write(f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                    for seg in transcript:
+                        start = seg.get('start', 0)
+                        end = seg.get('end', 0)
+                        text = seg.get('text', '')
+                        f.write(f"[{start:.2f} - {end:.2f}] {text}\n")
+                print(f"[OK] Transcript TXT: {txt_path}")
             else:
                 print("\n" + "=" * 60)
                 print("[Step 3/7] Skipping transcription (--skip-transcription)")
@@ -184,21 +213,35 @@ class PipelineOrchestrator:
             print("[Step 4/7] Extracting frames...")
             print("=" * 60)
 
-            print("[INFO] Method: " + ("Transcript-aligned" if transcript else "Interval-based"))
+            # Determine extraction method based on strategy
+            if frame_strategy == "scene":
+                method_name = "Scene detection (fewer frames, saves API calls)"
+            elif frame_strategy == "interval" or skip_transcription:
+                method_name = "Interval-based"
+            else:
+                method_name = "Transcript-aligned"
+            
+            print(f"[INFO] Method: {method_name}")
             print("[PROGRESS] Extracting...", end="", flush=True)
 
-            if skip_transcription:
-                # Use interval-based extraction
+            if frame_strategy == "scene":
+                # Use scene detection for key frames (fewer frames, fewer API calls)
+                frames = self.frame_extractor.extract_key_frames(
+                    video_info["filepath"],
+                    max_frames=5  # Limit to 5 key frames max
+                )
+            elif skip_transcription or frame_strategy == "interval":
+                # Use interval-based extraction (max 5 frames)
                 frames = self.frame_extractor.extract_frames_by_interval(
                     video_info["filepath"],
-                    interval_sec=15.0
+                    max_frames=5
                 )
             else:
-                # Use transcript-aligned extraction
+                # Use transcript-aligned extraction (default, max 5 frames)
                 frames = self.frame_extractor.extract_frames_by_transcript(
                     video_info["filepath"],
                     transcript,
-                    interval_sec=10.0
+                    max_frames=5
                 )
 
             print(" Complete!")

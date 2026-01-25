@@ -33,6 +33,9 @@ Examples:
 
   # Use CPU instead of GPU
   python main.py "https://www.youtube.com/watch?v=xxx" --whisper-device cpu
+
+  # Use scene detection for fewer frames (saves API calls)
+  python main.py "https://www.youtube.com/watch?v=xxx" --frame-strategy scene
         """
     )
 
@@ -74,6 +77,14 @@ Examples:
         "--skip-analysis",
         action="store_true",
         help="Skip image analysis"
+    )
+
+    # Frame extraction options
+    parser.add_argument(
+        "--frame-strategy",
+        choices=["transcript", "interval", "scene"],
+        default="transcript",
+        help="Frame extraction strategy: transcript (align to speech), interval (fixed interval), scene (scene detection, fewer frames) (default: transcript)"
     )
 
     # Whisper options
@@ -225,7 +236,8 @@ def main():
             output_formats=formats,
             local_video=args.local_video,
             skip_transcription=args.skip_transcription,
-            skip_analysis=args.skip_analysis
+            skip_analysis=args.skip_analysis,
+            frame_strategy=args.frame_strategy
         )
 
         if results["success"]:
