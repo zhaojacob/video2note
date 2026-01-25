@@ -73,10 +73,13 @@ class MarkdownGenerator:
         lines.append("---\n")
 
         # Add full transcript with images (new format)
+        # Use chapters if available (with titles), otherwise polished_text or raw transcript
         lines.extend(self._generate_transcript_section(
             data.get('full_transcript', []),
             data.get('sections', []),
-            relative_images
+            relative_images,
+            data.get('polished_text', ''),
+            data.get('chapters', [])
         ))
 
         lines.append("---\n")
@@ -186,20 +189,28 @@ class MarkdownGenerator:
         self,
         full_transcript: List[Dict[str, Any]],
         sections: List[Dict[str, Any]],
-        relative_images: bool
+        relative_images: bool,
+        polished_text: str = "",
+        chapters: List[Dict[str, Any]] = None
     ) -> List[str]:
         """
         Generate transcript section with images inserted at timestamps
         
-        Uses full_transcript if available, otherwise falls back to sections
+        Uses chapters if available, otherwise polished_text, full_transcript, then sections
         """
         lines = [
             "## 正文",
             "",
         ]
         
-        # Prefer new full_transcript format
-        if full_transcript:
+        # Prefer chapters (with titles and structured content)
+        if chapters:
+            lines.extend(self._render_chapters(chapters))
+        # Fallback to polished text (with punctuation, paragraphs)
+        elif polished_text:
+            lines.extend(self._render_polished_text(polished_text))
+        # Fallback to full_transcript format
+        elif full_transcript:
             lines.extend(self._render_full_transcript(full_transcript, relative_images))
         elif sections:
             # Fallback to old sections format
@@ -207,6 +218,61 @@ class MarkdownGenerator:
         else:
             lines.append("*（无转录内容）*")
             lines.append("")
+        
+        return lines
+
+    def _render_chapters(self, chapters: List[Dict[str, Any]]) -> List[str]:
+        """Render chapters with titles and content"""
+        lines = []
+        
+        for i, chapter in enumerate(chapters):
+            title = chapter.get('title', f'章节 {i + 1}')
+            content = chapter.get('content', '')
+            
+            # Add chapter title as heading level 3
+            lines.append(f"### {title}")
+            lines.append("")
+            
+            # Add chapter content
+            if content:
+                # Split content into paragraphs
+                paragraphs = content.split('\n\n') if '\n\n' in content else content.split('\n')
+                
+                for para_text in paragraphs:
+                    para_text = para_text.strip()
+                    if not para_text:
+                        continue
+                    
+                    lines.append(para_text)
+                    lines.append("")  # Blank line between paragraphs
+            
+            lines.append("")  # Extra spacing between chapters
+        
+        return lines
+
+    def _render_polished_text(self, text: str) -> List[str]:
+        """Render polished transcript text with proper paragraphs"""
+        lines = []
+        
+        # Check if text contains chapter markers (## Title)
+        if '## ' in text:
+            # Parse and render as chapters
+            from utils.text_polisher import TextPolisher
+            polisher = TextPolisher()
+            chapters = polisher._parse_chapters(text)
+            if chapters:
+                return self._render_chapters(chapters)
+        
+        # Split by double newlines (paragraphs) or single newlines
+        paragraphs = text.split('\n\n') if '\n\n' in text else text.split('\n')
+        
+        for para_text in paragraphs:
+            para_text = para_text.strip()
+            if not para_text:
+                continue
+            
+            lines.append(para_text)
+            lines.append("")  # Blank line between paragraphs
         
         return lines
 

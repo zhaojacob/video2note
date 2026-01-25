@@ -87,10 +87,13 @@ class DocxGenerator:
         )
 
         # Add transcript section with images
+        # Use chapters if available (with titles), otherwise polished_text or raw transcript
         self._add_transcript_section(
             doc,
             data.get("full_transcript", []),
-            data.get("sections", [])
+            data.get("sections", []),
+            data.get("polished_text", ""),
+            data.get("chapters", [])
         )
 
         # Add statistics
@@ -226,15 +229,23 @@ class DocxGenerator:
         self,
         doc: Document,
         full_transcript: List[Dict[str, Any]],
-        sections: List[Dict[str, Any]]
+        sections: List[Dict[str, Any]],
+        polished_text: str = "",
+        chapters: List[Dict[str, Any]] = None
     ):
         """Add transcript section with images"""
         heading = doc.add_heading("正文", level=2)
         for run in heading.runs:
             self._set_run_font(run, size=FONT_SIZE_HEADING, bold=True)
         
-        # Prefer new full_transcript format
-        if full_transcript:
+        # Prefer chapters (with titles and structured content)
+        if chapters:
+            self._render_chapters(doc, chapters)
+        # Fallback to polished text (with punctuation, paragraphs)
+        elif polished_text:
+            self._render_polished_text(doc, polished_text)
+        # Fallback to full_transcript format
+        elif full_transcript:
             self._render_full_transcript(doc, full_transcript)
         elif sections:
             # Fallback to old sections format
@@ -243,6 +254,73 @@ class DocxGenerator:
             p = doc.add_paragraph()
             run = p.add_run("（无转录内容）")
             self._set_run_font(run, color=COLOR_GRAY, italic=True)
+
+    def _render_chapters(self, doc: Document, chapters: List[Dict[str, Any]]):
+        """Render chapters with titles and content"""
+        from docx.shared import RGBColor
+        
+        for i, chapter in enumerate(chapters):
+            title = chapter.get('title', f'章节 {i + 1}')
+            content = chapter.get('content', '')
+            
+            # Add chapter title as heading level 3
+            chapter_heading = doc.add_heading(title, level=3)
+            for run in chapter_heading.runs:
+                # Style: bold, slightly larger, dark blue color for emphasis
+                run.font.name = FONT_ENGLISH
+                run.font.size = Pt(14)  # 14pt for chapter titles
+                run.font.bold = True
+                run.font.color.rgb = RGBColor(0, 51, 102)  # Dark blue
+                run._element.rPr.rFonts.set(qn('w:eastAsia'), FONT_CHINESE)
+            
+            # Add chapter content
+            if content:
+                # Split content into paragraphs
+                paragraphs = content.split('\n\n') if '\n\n' in content else content.split('\n')
+                
+                for para_text in paragraphs:
+                    para_text = para_text.strip()
+                    if not para_text:
+                        continue
+                    
+                    p = doc.add_paragraph()
+                    # First line indent for Chinese style
+                    p.paragraph_format.first_line_indent = Inches(0.5)
+                    p.paragraph_format.line_spacing = 1.5
+                    
+                    run = p.add_run(para_text)
+                    self._set_run_font(run)
+            
+            # Add spacing between chapters
+            doc.add_paragraph()
+
+    def _render_polished_text(self, doc: Document, text: str):
+        """Render polished transcript text with proper paragraphs"""
+        # Check if text contains chapter markers (## Title)
+        if '## ' in text:
+            # Parse and render as chapters
+            from utils.text_polisher import TextPolisher
+            polisher = TextPolisher()
+            chapters = polisher._parse_chapters(text)
+            if chapters:
+                self._render_chapters(doc, chapters)
+                return
+        
+        # Split by double newlines (paragraphs) or single newlines
+        paragraphs = text.split('\n\n') if '\n\n' in text else text.split('\n')
+        
+        for para_text in paragraphs:
+            para_text = para_text.strip()
+            if not para_text:
+                continue
+            
+            p = doc.add_paragraph()
+            # First line indent for Chinese style
+            p.paragraph_format.first_line_indent = Inches(0.5)
+            p.paragraph_format.line_spacing = 1.5
+            
+            run = p.add_run(para_text)
+            self._set_run_font(run)
 
     def _render_full_transcript(self, doc: Document, items: List[Dict[str, Any]]):
         """Render full transcript with embedded images and translations"""

@@ -41,7 +41,9 @@ class Structurer:
         summary: str = None,
         keywords: List[str] = None,
         generate_ai_summary: bool = True,
-        translate_to: str = None
+        translate_to: str = None,
+        polished_text: str = None,
+        chapters: List[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Structure all data into final note format
@@ -54,6 +56,8 @@ class Structurer:
             keywords: Keywords/tags
             generate_ai_summary: Whether to generate AI summary using DeepSeek
             translate_to: Target language for translation (None = no translation)
+            polished_text: Polished transcript text (with punctuation, paragraphs, simplified Chinese)
+            chapters: List of chapter dicts with 'title' and 'content' from TextPolisher
 
         Returns:
             Structured note data
@@ -68,7 +72,12 @@ class Structurer:
         content = processor.process_with_frames(transcript, frame_analyses)
 
         # Get full transcript text for summary generation
-        full_transcript_text = self._get_full_transcript_text(transcript)
+        # Use polished text if available (with punctuation, paragraphs, simplified Chinese)
+        if polished_text:
+            full_transcript_text = polished_text
+            logger.info(f"Using polished transcript text ({len(polished_text)} chars)")
+        else:
+            full_transcript_text = self._get_full_transcript_text(transcript)
         
         # Generate AI summary if not provided
         if summary is None and generate_ai_summary and full_transcript_text:
@@ -139,6 +148,10 @@ class Structurer:
             "summary": summary or "",
             "summary_translated": summary_translated,
             "keywords": keywords or content.get("topics", []),
+            # Polished transcript text (with punctuation, paragraphs, simplified Chinese)
+            "polished_text": polished_text or "",
+            # Chapters from TextPolisher (with titles)
+            "chapters": chapters or [],
             # New structure: full transcript with timestamps and images
             "full_transcript": self._create_full_transcript_with_images(
                 transcript,
@@ -158,6 +171,7 @@ class Structurer:
                     1 for f in frame_analyses if f.get("success")
                 ),
                 "translated": translate_to is not None,
+                "chapter_count": len(chapters) if chapters else 0,
             },
         }
 

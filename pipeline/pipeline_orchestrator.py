@@ -184,6 +184,33 @@ class PipelineOrchestrator:
                 print(" Complete!")
                 print(f"[OK] Transcription: {len(transcript)} segments")
                 
+                # Get raw text from transcript (before polishing)
+                raw_text = " ".join(seg.get("text", "") for seg in transcript)
+                
+                # Polish transcript text using DeepSeek (default enabled)
+                from utils.text_polisher import TextPolisher
+                polisher = TextPolisher()
+                transcript_polished = None
+                transcript_chapters = []
+                
+                if polisher.is_available() and transcript:
+                    print("[PROGRESS] Polishing transcript text...", end="", flush=True)
+                    # Get video duration in minutes for chapter limit calculation
+                    duration_minutes = video_info.get("duration", 0) / 60
+                    # Get source language from whisper config
+                    from config.settings import WHISPER_CONFIG
+                    source_language = WHISPER_CONFIG.get("language", "auto")
+                    
+                    # Polish with chapter organization
+                    transcript_polished, transcript_chapters = polisher.polish_transcript(
+                        raw_text,
+                        duration_minutes=duration_minutes,
+                        source_language=source_language
+                    )
+                    print(" Complete!")
+                    print(f"[OK] Text polished: {len(raw_text)} -> {len(transcript_polished)} chars")
+                    print(f"[OK] Chapters: {len(transcript_chapters)}")
+                
                 # Save transcript to JSON and TXT files
                 from config.settings import OUTPUT_DIRS
                 from utils.file_handler import sanitize_filename
@@ -193,28 +220,42 @@ class PipelineOrchestrator:
                 timestamp_suffix = datetime.now().strftime("%Y%m%d_%H%M%S")
                 transcript_base = f"{base_name}_{timestamp_suffix}"
                 
-                # Save JSON format
+                # Save JSON format (raw transcript with segments)
                 json_path = OUTPUT_DIRS["transcripts"] / f"{transcript_base}.json"
                 with open(json_path, "w", encoding="utf-8") as f:
                     json.dump(transcript, f, ensure_ascii=False, indent=2)
-                print(f"[OK] Transcript JSON: {json_path}")
+                print(f"[OK] Transcript JSON (raw): {json_path}")
                 
-                # Save TXT format (plain text with timestamps)
-                txt_path = OUTPUT_DIRS["transcripts"] / f"{transcript_base}.txt"
-                with open(txt_path, "w", encoding="utf-8") as f:
+                # Save TXT format - RAW version (original Whisper output)
+                txt_raw_path = OUTPUT_DIRS["transcripts"] / f"{transcript_base}_raw.txt"
+                with open(txt_raw_path, "w", encoding="utf-8") as f:
                     f.write(f"# {video_info.get('title', 'Video Transcript')}\n")
-                    f.write(f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                    f.write(f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write(f"# Type: Raw Whisper Transcription\n\n")
                     for seg in transcript:
                         start = seg.get('start', 0)
                         end = seg.get('end', 0)
                         text = seg.get('text', '')
                         f.write(f"[{start:.2f} - {end:.2f}] {text}\n")
-                print(f"[OK] Transcript TXT: {txt_path}")
+                print(f"[OK] Transcript TXT (raw): {txt_raw_path}")
+                
+                # Save TXT format - POLISHED version (with punctuation, paragraphs, chapters)
+                if transcript_polished:
+                    txt_polished_path = OUTPUT_DIRS["transcripts"] / f"{transcript_base}_polished.txt"
+                    with open(txt_polished_path, "w", encoding="utf-8") as f:
+                        f.write(f"# {video_info.get('title', 'Video Transcript')}\n")
+                        f.write(f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                        f.write(f"# Type: Polished (punctuation, paragraphs, chapters)\n\n")
+                        # Use plain text version (with 【章节标题】 format)
+                        f.write(polisher.get_plain_text(transcript_polished))
+                    print(f"[OK] Transcript TXT (polished): {txt_polished_path}")
             else:
                 print("\n" + "=" * 60)
                 print("[Step 3/7] Skipping transcription (--skip-transcription)")
                 print("=" * 60)
                 transcript = []
+                transcript_polished = None
+                transcript_chapters = []
 
             # Step 4: Extract frames
             print("\n" + "=" * 60)
@@ -328,9 +369,13 @@ class PipelineOrchestrator:
                 transcript=transcript,
                 frame_analyses=frame_analyses,
                 translate_to=translate_to,
+                polished_text=transcript_polished,
+                chapters=transcript_chapters if 'transcript_chapters' in dir() else [],
             )
 
             print(f"[OK] Created {len(structured_data['sections'])} sections")
+            if structured_data.get('chapters'):
+                print(f"[OK] Chapters: {len(structured_data['chapters'])}")
 
             # Generate documents
             print("\n" + "=" * 60)
