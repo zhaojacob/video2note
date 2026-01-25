@@ -1,0 +1,39 @@
+# Video Note Generation System - Requirements
+
+# Video download
+yt-dlp>=2024.1.1
+
+# Audio/video processing
+moviepy>=1.0.3
+opencv-python>=4.9.0.0
+pydub>=0.25.1
+
+# Scene detection
+scenedetect>=0.6.2
+
+# Speech recognition (GPU-accelerated)
+faster-whisper>=1.0.0
+torch>=2.1.0
+torchaudio>=2.1.0
+
+# Image processing
+Pillow>=10.2.0
+imagehash>=4.3.1
+
+# OCR (optional)
+pytesseract>=0.3.10
+
+# HTTP clients
+requests>=2.31.0
+httpx>=0.25.0
+aiohttp>=3.9.0
+
+# OpenAI SDK (for Doubao API compatibility)
+openai>=1.0.0
+
+# Document generation
+python-docx>=1.1.0
+markdown>=3.5.0
+
+# Utilities
+python-dotenv>=1.0.0
