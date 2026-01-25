@@ -54,13 +54,13 @@ DOUBAO_CONFIG = {
 }
 
 # DeepSeek configuration (for summary generation and text polishing)
+# All use deepseek-chat model with 128K context window and 8K max output
 DEEPSEEK_CONFIG = {
     "api_key": os.getenv("DEEPSEEK_API_KEY", ""),
-    "model": "deepseek-reasoner",  # Use reasoner for thinking mode
+    "model": "deepseek-chat",  # Use chat model for all tasks (128K context, 8K output)
     "base_url": "https://api.deepseek.com",
-    "timeout": 300,  # Longer timeout for thinking mode
-    "max_tokens": 32768,  # 32K default, max 64K for thinking mode
-    "thinking": True,  # Enable thinking/reasoning mode
+    "max_tokens": 8192,  # Maximum output tokens (8K)
+    "thinking": False,  # Thinking mode disabled (not needed for polish/summary)
 }
 
 # Frame extraction configuration

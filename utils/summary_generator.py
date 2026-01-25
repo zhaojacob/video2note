@@ -1,9 +1,10 @@
 """
-Summary generator using DeepSeek Reasoner with thinking mode
+Summary generator using DeepSeek Chat model
 """
 import logging
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 from openai import OpenAI
+from openai import APIError, RateLimitError, APITimeoutError, AuthenticationError
 
 from config.settings import DEEPSEEK_CONFIG
 
@@ -11,71 +12,129 @@ logger = logging.getLogger(__name__)
 
 
 class SummaryGenerator:
-    """Generate video summaries using DeepSeek Reasoner with thinking mode"""
+    """Generate video summaries using DeepSeek Chat model (128K context, 8K output)"""
 
     def __init__(self, api_key: Optional[str] = None):
         """
         Initialize summary generator with DeepSeek API
-        
+
         Args:
             api_key: DeepSeek API key (optional, uses config if not provided)
         """
         self.api_key = api_key or DEEPSEEK_CONFIG.get("api_key")
         self.base_url = DEEPSEEK_CONFIG.get("base_url", "https://api.deepseek.com")
-        self.model = DEEPSEEK_CONFIG.get("model", "deepseek-reasoner")
-        self.max_tokens = DEEPSEEK_CONFIG.get("max_tokens", 32768)
-        self.thinking_enabled = DEEPSEEK_CONFIG.get("thinking", True)
-        
+        self.model = DEEPSEEK_CONFIG.get("model", "deepseek-chat")
+        self.max_tokens = DEEPSEEK_CONFIG.get("max_tokens", 8192)
+
         if not self.api_key:
             logger.warning("DeepSeek API key not found. Summary generation will be disabled.")
             self.client = None
         else:
-            self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
-            logger.info(f"SummaryGenerator initialized with model: {self.model}, thinking: {self.thinking_enabled}")
+            # Initialize client following DeepSeek official example
+            self.client = OpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url
+            )
+            logger.info(f"SummaryGenerator initialized: model={self.model}, max_tokens={self.max_tokens}")
 
     def is_available(self) -> bool:
         """Check if generator is available"""
         return self.client is not None
 
-    def _call_deepseek(self, messages: List[Dict[str, str]], 
-                       max_tokens: Optional[int] = None) -> Tuple[Optional[str], Optional[str]]:
+    def _call_deepseek(self, messages: List[Dict[str, str]],
+                       max_tokens: Optional[int] = None) -> Optional[str]:
         """
-        Call DeepSeek API with thinking mode
-        
+        Call DeepSeek API with detailed error reporting
+
         Args:
             messages: Conversation messages
             max_tokens: Max tokens for response
-            
+
         Returns:
-            Tuple of (content, reasoning_content)
+            Response content string, or None if failed
         """
         if not self.client:
-            return None, None
-            
+            logger.error("DeepSeek client not initialized")
+            return None
+
         try:
+            # Build request parameters following DeepSeek official example
             params = {
                 "model": self.model,
                 "messages": messages,
                 "max_tokens": max_tokens or self.max_tokens,
+                "temperature": 0.7,
+                "stream": False,
             }
-            
-            # Enable thinking mode if configured
-            if self.thinking_enabled:
-                params["extra_body"] = {"thinking": {"type": "enabled"}}
-            
-            logger.debug(f"Calling DeepSeek API for summary generation")
+
+            # Log request details
+            input_chars = sum(len(m.get("content", "")) for m in messages)
+            logger.info(f"DeepSeek API request: model={self.model}, max_tokens={params['max_tokens']}, input_chars={input_chars}")
+
+            logger.debug(f"Calling DeepSeek API for summary")
             response = self.client.chat.completions.create(**params)
-            
+
             content = response.choices[0].message.content
-            reasoning_content = getattr(response.choices[0].message, 'reasoning_content', None)
-            
-            logger.debug(f"Response received: {len(content) if content else 0} chars")
-            
-            return content, reasoning_content
-            
+
+            logger.info(f"DeepSeek API success: output_chars={len(content) if content else 0}")
+            return content
+
+        except AuthenticationError as e:
+            error_code = getattr(e, 'code', 'unknown')
+            logger.error(f"DeepSeek Authentication Error (code={error_code}): {e}")
+            print(f"[ERROR] Authentication failed: {e}")
+            return None
+
+        except RateLimitError as e:
+            logger.warning(f"DeepSeek Rate Limit Error: {e}")
+            print(f"[WARNING] Rate limit exceeded: {e}")
+            return None
+
+        except APITimeoutError as e:
+            logger.warning(f"DeepSeek Timeout Error: {e}")
+            print(f"[WARNING] Request timeout: {e}")
+            return None
+
+        except APIError as e:
+            status_code = getattr(e, 'status_code', 'unknown')
+            error_code = getattr(e, 'code', None)
+            error_body = getattr(e, 'body', {})
+
+            error_detail = self._extract_error_detail(error_body)
+            logger.error(f"DeepSeek API Error: status={status_code}, code={error_code}, detail={error_detail}")
+            print(f"[ERROR] API Error (status={status_code}): {error_detail or str(e)}")
+            return None
+
         except Exception as e:
-            logger.error(f"DeepSeek API call failed: {e}")
-            return None, None
+            error_type = type(e).__name__
+            logger.error(f"DeepSeek Unexpected Error: {error_type}: {e}")
+            print(f"[ERROR] Unexpected error: {error_type} - {e}")
+            return None
+
+    def _extract_error_detail(self, error_body: Dict[str, Any]) -> str:
+        """
+        Extract detailed error message from error body
+
+        Args:
+            error_body: Error response body
+
+        Returns:
+            Formatted error message
+        """
+        if not error_body:
+            return ""
+
+        if isinstance(error_body, dict):
+            if 'error' in error_body:
+                error = error_body['error']
+                if isinstance(error, dict):
+                    return error.get('message', str(error))
+                return str(error)
+
+            if 'message' in error_body:
+                return error_body['message']
+
+        return str(error_body)
 
     def generate_summary(
         self,
@@ -126,9 +185,9 @@ class SummaryGenerator:
 请直接输出摘要内容，不要添加任何前缀或标签："""
 
         messages = [{"role": "user", "content": prompt}]
-        
-        logger.info("Generating summary with DeepSeek Reasoner...")
-        content, reasoning = self._call_deepseek(messages, max_tokens=4096)
+
+        logger.info("Generating summary with DeepSeek Chat...")
+        content = self._call_deepseek(messages, max_tokens=4096)
         
         if not content:
             logger.warning("Empty response from DeepSeek")
@@ -185,7 +244,7 @@ class SummaryGenerator:
 关键词："""
 
         messages = [{"role": "user", "content": prompt}]
-        content, _ = self._call_deepseek(messages, max_tokens=500)
+        content = self._call_deepseek(messages, max_tokens=500)
         
         if not content:
             return []

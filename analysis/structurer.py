@@ -101,8 +101,8 @@ class Structurer:
         
         # Step 1: Polish transcript (if enabled)
         if enable_polish and raw_transcript_text:
-            logger.info("Polishing transcript with DeepSeek Reasoner...")
-            print("\n[Text Polish] Polishing transcript with DeepSeek Reasoner...")
+            logger.info("Polishing transcript with DeepSeek...")
+            print("\n[Text Polish] Polishing transcript with DeepSeek...")
             try:
                 polisher = self._get_text_polisher()
                 if polisher.is_available():

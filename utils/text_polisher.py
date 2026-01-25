@@ -1,11 +1,12 @@
 """
-Text polisher using DeepSeek Reasoner with thinking mode
-Supports multi-turn conversation for long transcripts
+Text polisher using DeepSeek Chat model
+Supports incremental polishing for long transcripts
 """
 import logging
 import re
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any
 from openai import OpenAI
+from openai import APIError, RateLimitError, APITimeoutError, AuthenticationError, APIConnectionError
 
 from config.settings import DEEPSEEK_CONFIG
 
@@ -14,91 +15,240 @@ logger = logging.getLogger(__name__)
 
 class TextPolisher:
     """
-    Text polisher using DeepSeek Reasoner with thinking mode enabled.
-    
-    Strategy for long transcripts:
-    - Turn 1: Generate chapter outline based on content
-    - Turn 2+: Polish each chapter with context from previous turns
+    Text polisher using DeepSeek Chat model.
+
+    Strategy:
+    - Short texts (<6000 chars): Single-turn processing
+    - Long texts (>6000 chars): Multi-turn incremental polishing (polish each chunk independently, then merge)
+
+    Model: deepseek-chat (128K context, 8K max output)
+    Chunk size: 6000 chars (~2000-3000 tokens input, safe for 8K output)
     """
-    
-    # Characters per chunk for multi-turn processing
-    CHUNK_SIZE = 8000
+
+    # Characters per chunk - 4500 chars for better timeout tolerance
+    # 4500 chars ≈ 1500-2250 tokens input
+    # Output max 8192 tokens (~16000-24000 chars) - ample headroom
+    CHUNK_SIZE = 4500
+
+    # Max characters for single-turn processing
+    MAX_SINGLE_TURN = 4500
     
     def __init__(self, api_key: Optional[str] = None):
         """
         Initialize TextPolisher with DeepSeek API
-        
+
         Args:
             api_key: DeepSeek API key (optional, uses config if not provided)
         """
         self.api_key = api_key or DEEPSEEK_CONFIG.get("api_key")
         self.base_url = DEEPSEEK_CONFIG.get("base_url", "https://api.deepseek.com")
-        self.model = DEEPSEEK_CONFIG.get("model", "deepseek-reasoner")
-        self.max_tokens = DEEPSEEK_CONFIG.get("max_tokens", 32768)
-        self.thinking_enabled = DEEPSEEK_CONFIG.get("thinking", True)
-        
+        self.model = DEEPSEEK_CONFIG.get("model", "deepseek-chat")
+        self.max_tokens = DEEPSEEK_CONFIG.get("max_tokens", 8192)
+        self.thinking_enabled = DEEPSEEK_CONFIG.get("thinking", False)
+
         if not self.api_key:
             logger.warning("DeepSeek API key not configured, TextPolisher will be disabled")
             self.client = None
         else:
-            self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
-            logger.info(f"TextPolisher initialized with model: {self.model}, thinking: {self.thinking_enabled}")
+            # Initialize client following DeepSeek official example
+            # Set timeout to 300 seconds (5 minutes) to handle long text generation
+            self.client = OpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                timeout=300.0,  # 5 minute timeout for long responses
+                max_retries=2    # Client-level retry for connection errors
+            )
+            logger.info(f"TextPolisher initialized: model={self.model}, max_tokens={self.max_tokens}, timeout=300s")
 
     def is_available(self) -> bool:
         """Check if polisher is available"""
         return self.client is not None
 
-    def _call_deepseek(self, messages: List[Dict[str, str]], 
-                       max_tokens: Optional[int] = None) -> Tuple[Optional[str], Optional[str]]:
+    def _call_deepseek(self, messages: List[Dict[str, str]],
+                       max_tokens: Optional[int] = None,
+                       retry_count: int = 2) -> Optional[str]:
         """
-        Call DeepSeek API with thinking mode
-        
+        Call DeepSeek API with retry logic and detailed error reporting
+
         Args:
-            messages: Conversation messages
+            messages: Conversation messages (should include system and user roles)
             max_tokens: Max tokens for response
-            
+            retry_count: Number of retries on failure
+
         Returns:
-            Tuple of (content, reasoning_content)
+            Response content string, or None if failed
         """
         if not self.client:
-            return None, None
-            
-        try:
-            # Build request parameters
-            params = {
-                "model": self.model,
-                "messages": messages,
-                "max_tokens": max_tokens or self.max_tokens,
-            }
-            
-            # Enable thinking mode if configured
-            if self.thinking_enabled:
-                params["extra_body"] = {"thinking": {"type": "enabled"}}
-            
-            logger.debug(f"Calling DeepSeek API with {len(messages)} messages")
-            response = self.client.chat.completions.create(**params)
-            
-            content = response.choices[0].message.content
-            reasoning_content = getattr(response.choices[0].message, 'reasoning_content', None)
-            
-            logger.debug(f"Response received: {len(content) if content else 0} chars")
-            if reasoning_content:
-                logger.debug(f"Reasoning content: {len(reasoning_content)} chars")
-            
-            return content, reasoning_content
-            
-        except Exception as e:
-            logger.error(f"DeepSeek API call failed: {e}")
-            return None, None
+            logger.error("DeepSeek client not initialized")
+            return None
+
+        # Build request parameters following DeepSeek official example
+        params = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": max_tokens or self.max_tokens,
+            "temperature": 0.3,  # Lower temperature for consistent polish results
+            "stream": False,  # Disable streaming
+        }
+
+        # Log request details for debugging
+        input_chars = sum(len(m.get("content", "")) for m in messages)
+        logger.info(f"DeepSeek API request: model={self.model}, max_tokens={params['max_tokens']}, input_chars={input_chars}")
+
+        for attempt in range(retry_count + 1):
+            try:
+                logger.debug(f"Calling DeepSeek API (attempt {attempt + 1}/{retry_count + 1})")
+                response = self.client.chat.completions.create(**params)
+
+                content = response.choices[0].message.content
+
+                # Log success details
+                logger.info(f"DeepSeek API success: output_chars={len(content) if content else 0}")
+                return content
+
+            except AuthenticationError as e:
+                # Authentication error (401) - don't retry
+                error_code = getattr(e, 'code', 'unknown')
+                error_msg = str(e)
+                logger.error(f"DeepSeek API Authentication Error (code={error_code}): {error_msg}")
+                print(f"\n[ERROR] Authentication failed: {error_msg}")
+                print(f"[ERROR] Please check your API key in .env file")
+                return None
+
+            except RateLimitError as e:
+                # Rate limit error (429) - retry with longer wait
+                error_code = getattr(e, 'code', 'rate_limit_exceeded')
+                error_msg = str(e)
+                logger.warning(f"DeepSeek API Rate Limit Error (attempt {attempt + 1}): {error_msg}")
+                print(f"\n[WARNING] Rate limit exceeded: {error_code}")
+
+                if attempt < retry_count:
+                    wait_time = 60  # Wait 60 seconds for rate limit
+                    print(f"[INFO] Waiting {wait_time}s before retry...")
+                    import time
+                    time.sleep(wait_time)
+                else:
+                    print(f"[ERROR] Rate limit: {error_msg}")
+                    return None
+
+            except APITimeoutError as e:
+                # Timeout error - retry
+                error_msg = str(e)
+                logger.warning(f"DeepSeek API Timeout (attempt {attempt + 1}): {error_msg}")
+                print(f"\n[WARNING] Request timeout: {error_msg}")
+
+                if attempt < retry_count:
+                    import time
+                    wait_time = (attempt + 1) * 10  # 10s, 20s backoff for timeout
+                    print(f"[INFO] Retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                else:
+                    print(f"[ERROR] Request timeout after {retry_count + 1} attempts")
+                    return None
+
+            except APIConnectionError as e:
+                # Connection error (network issue, server dropped connection, etc.)
+                error_msg = str(e)
+                logger.warning(f"DeepSeek Connection Error (attempt {attempt + 1}): {error_msg}")
+                print(f"\n[WARNING] Connection dropped/failed: {error_msg}")
+
+                if attempt < retry_count:
+                    import time
+                    wait_time = (attempt + 1) * 5  # 5s, 10s backoff
+                    print(f"[INFO] Retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                else:
+                    print(f"[ERROR] Connection failed after {retry_count + 1} attempts")
+                    return None
+
+            except APIError as e:
+                # API error with status code
+                status_code = getattr(e, 'status_code', 'unknown')
+                error_code = getattr(e, 'code', None)
+                error_body = getattr(e, 'body', {})
+                error_msg = str(e)
+
+                # Extract detailed error info
+                error_detail = self._extract_error_detail(error_body)
+
+                logger.error(f"DeepSeek API Error (attempt {attempt + 1}): status={status_code}, code={error_code}, detail={error_detail}")
+                print(f"\n[ERROR] API Error (status={status_code})")
+                if error_code:
+                    print(f"[ERROR] Error code: {error_code}")
+                if error_detail:
+                    print(f"[ERROR] Message: {error_detail}")
+                else:
+                    print(f"[ERROR] {error_msg}")
+
+                # Don't retry on client errors (4xx), but retry on server errors (5xx)
+                if isinstance(status_code, int) and 400 <= status_code < 500:
+                    logger.error(f"Client error {status_code} - not retrying")
+                    print(f"[ERROR] Client error - check request parameters")
+                    return None
+                elif attempt < retry_count:
+                    import time
+                    wait_time = (attempt + 1) * 5  # 5s, 10s backoff
+                    print(f"[INFO] Retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                else:
+                    print(f"[ERROR] Failed after {retry_count + 1} attempts")
+                    return None
+
+            except Exception as e:
+                # Unknown error
+                error_type = type(e).__name__
+                error_msg = str(e)
+                logger.error(f"DeepSeek API Unexpected Error (attempt {attempt + 1}): {error_type}: {error_msg}")
+                print(f"\n[ERROR] Unexpected error: {error_type}")
+                print(f"[ERROR] {error_msg}")
+
+                if attempt < retry_count:
+                    import time
+                    wait_time = (attempt + 1) * 5
+                    print(f"[INFO] Retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                else:
+                    print(f"[ERROR] Failed after {retry_count + 1} attempts")
+                    return None
+
+        return None
+
+    def _extract_error_detail(self, error_body: Dict[str, Any]) -> str:
+        """
+        Extract detailed error message from error body
+
+        Args:
+            error_body: Error response body
+
+        Returns:
+            Formatted error message
+        """
+        if not error_body:
+            return ""
+
+        # Try to get error message from different possible structures
+        if isinstance(error_body, dict):
+            # OpenAI error format
+            if 'error' in error_body:
+                error = error_body['error']
+                if isinstance(error, dict):
+                    return error.get('message', str(error))
+                return str(error)
+
+            # Direct message field
+            if 'message' in error_body:
+                return error_body['message']
+
+        return str(error_body)
 
     def polish(self, raw_transcript: str, video_title: str = "", 
                duration_minutes: float = 0) -> Optional[str]:
         """
-        Polish raw transcript using multi-turn conversation
+        Polish raw transcript
         
         Strategy:
-        1. If text is short (<CHUNK_SIZE), polish in single turn
-        2. If text is long, use multi-turn: outline first, then polish by chapter
+        1. If text is short (<MAX_SINGLE_TURN), polish in single turn
+        2. If text is long, use multi-turn conversation
         
         Args:
             raw_transcript: Raw transcript text from Whisper
@@ -118,17 +268,20 @@ class TextPolisher:
         
         text_length = len(raw_transcript)
         logger.info(f"Polishing transcript: {text_length} chars, {duration_minutes:.1f} minutes")
+        print(f"  → Text length: {text_length} chars")
         
-        # Use simple single-turn for short texts
-        if text_length <= self.CHUNK_SIZE:
+        # Use simple single-turn for texts under 25000 chars (~100 min video usually ~35000)
+        if text_length <= self.MAX_SINGLE_TURN:
+            print(f"  → Using single-turn processing...")
             return self._polish_single_turn(raw_transcript, video_title)
         
-        # Use multi-turn for long texts
+        # Use multi-turn for very long texts
+        print(f"  → Text too long for single turn, using multi-turn processing...")
         return self._polish_multi_turn(raw_transcript, video_title, duration_minutes)
 
     def _polish_single_turn(self, text: str, video_title: str = "") -> Optional[str]:
         """
-        Polish short text in a single API call
+        Polish text in a single API call (for texts under 25000 chars)
         
         Args:
             text: Raw transcript text
@@ -137,130 +290,240 @@ class TextPolisher:
         Returns:
             Polished text
         """
-        title_context = f"视频标题：《{video_title}》\n" if video_title else ""
+        title_context = f"Video title: {video_title}\n" if video_title else ""
         
-        system_prompt = """你是一位专业的文字编辑，擅长将语音转录文本整理成结构清晰、易于阅读的文档。
+        system_prompt = """You are a professional transcript proofreader. Your task is to clean up speech-to-text transcripts.
 
-你的任务是：
-1. 修正语音识别错误（错别字、专业术语等）
-2. 去除口语化表达和语气词（啊、嗯、然后、这个、那个等）
-3. 合并重复和冗余的表达
-4. 根据内容主题划分章节，用 ## 章节标题 格式标记
-5. 在每个章节内保持原文的核心信息，但使行文流畅
+[STRICT REQUIREMENTS]
+- You can ONLY proofread and format. You must NOT rewrite, paraphrase, summarize, or condense the original text.
+- Every sentence from the original MUST be preserved. You are only making it more readable.
 
-输出格式：
-## 第一章节的标题
-该章节的整理后内容...
+[ALLOWED OPERATIONS]
+1. Add punctuation marks (periods, commas, question marks, exclamation marks, colons, etc.)
+2. Fix obvious speech recognition errors (homophones, typos)
+3. Remove consecutive filler words (like "um um um", "uh uh", "you know you know")
+4. Divide into chapters at topic transitions, using ## markers
 
-## 第二章节的标题
-该章节的整理后内容...
+[FORBIDDEN OPERATIONS]
+- Do NOT delete any substantive content
+- Do NOT change the speaker's original meaning
+- Do NOT add information not in the original
+- Do NOT rephrase in your own words
+- Do NOT summarize or condense
 
-注意：保持原文的信息完整性，不要添加原文没有的内容。"""
+[OUTPUT FORMAT]
+## Chapter Title (brief, based on content)
+Proofread original content...
 
-        user_prompt = f"""{title_context}请整理以下语音转录文本：
+## Next Chapter Title
+Proofread original content..."""
+
+        user_prompt = f"""{title_context}Please proofread the following speech transcript (only add punctuation and chapter divisions, preserve ALL original content):
 
 {text}"""
 
+        # Follow DeepSeek API format: system + user messages
         messages = [
-            {"role": "user", "content": system_prompt + "\n\n" + user_prompt}
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
         ]
+
+        print(f"  → Calling DeepSeek (this may take 1-2 minutes)...", end="", flush=True)
+        content = self._call_deepseek(messages)
         
-        content, _ = self._call_deepseek(messages)
+        if content:
+            print(" Done!")
+        else:
+            print(" Failed!")
+        
         return content
 
-    def _polish_multi_turn(self, text: str, video_title: str = "", 
+    def _polish_multi_turn(self, text: str, video_title: str = "",
                            duration_minutes: float = 0) -> Optional[str]:
         """
-        Polish long text using multi-turn conversation
-        
-        Turn 1: Generate chapter outline
-        Turn 2+: Polish each section with context
-        
+        Polish long text using incremental strategy (polish each chunk independently, then merge).
+
+        Strategy:
+        - Turn 1: Polish chunk 1 (start with chapter structure)
+        - Turn 2+: Polish chunk N with previous context (maintain continuity)
+        - Final: Merge all polished chunks
+
+        This avoids the large final generation that causes timeout/context overflow.
+
         Args:
             text: Raw transcript text
             video_title: Optional video title
             duration_minutes: Video duration
-            
+
         Returns:
             Polished text with chapters
         """
-        title_context = f"视频标题：《{video_title}》" if video_title else ""
-        duration_context = f"（时长约{duration_minutes:.0f}分钟）" if duration_minutes > 0 else ""
-        
-        # Split text into chunks
-        chunks = self._split_into_chunks(text)
-        logger.info(f"Split transcript into {len(chunks)} chunks for processing")
-        
-        # Turn 1: Analyze structure and get chapter outline
-        outline_prompt = f"""你是一位专业的文字编辑。我将分段发送一份长篇语音转录文本{duration_context}。
+        try:
+            # Split text into chunks
+            chunks = self._split_into_chunks(text)
+            logger.info(f"Split transcript into {len(chunks)} chunks for incremental polishing")
+            print(f"  → Split into {len(chunks)} chunks, polishing incrementally...")
 
-{title_context}
+            print(f"     [DEBUG] Total text: {len(text)} chars")
+            for i, c in enumerate(chunks):
+                print(f"     [DEBUG] Chunk {i+1}: {len(c)} chars", flush=True)
 
-这是完整转录文本的第1部分（共{len(chunks)}部分）：
+            # Base system prompt with all strict requirements (unchanged from original)
+            base_system_prompt = """You are a professional transcript proofreader. Your task is to clean up speech-to-text transcripts.
 
-{chunks[0]}
+[STRICT REQUIREMENTS]
+- You can ONLY proofread and format. You must NOT rewrite, paraphrase, summarize, or condense the original text.
+- Every sentence from the original MUST be preserved. You are only making it more readable.
 
-请先阅读这部分内容，告诉我你打算如何划分章节。只需要给出章节大纲，格式如：
-1. [章节名称] - 简要说明该章节涵盖的内容
-2. [章节名称] - 简要说明
-...
+[ALLOWED OPERATIONS]
+1. Add punctuation marks (periods, commas, question marks, exclamation marks, colons, etc.)
+2. Fix obvious speech recognition errors (homophones, typos)
+3. Remove consecutive filler words (like "um um um", "uh uh", "you know you know")
+4. Divide into chapters at topic transitions, using ## markers
 
-注意：现在只需要给出大纲计划，后续我会发送更多内容让你完善大纲。"""
+[FORBIDDEN OPERATIONS]
+- Do NOT delete any substantive content
+- Do NOT change the speaker's original meaning
+- Do NOT add information not in the original
+- Do NOT rephrase in your own words
+- Do NOT summarize or condense
 
-        messages = [{"role": "user", "content": outline_prompt}]
-        
-        outline_response, _ = self._call_deepseek(messages, max_tokens=4096)
-        if not outline_response:
-            logger.error("Failed to get chapter outline")
-            return self._polish_single_turn(text[:self.CHUNK_SIZE], video_title)
-        
-        logger.info("Got initial chapter outline")
-        messages.append({"role": "assistant", "content": outline_response})
-        
-        # Send remaining chunks to refine outline
-        for i, chunk in enumerate(chunks[1:], start=2):
-            chunk_prompt = f"""这是第{i}部分（共{len(chunks)}部分）：
+[OUTPUT FORMAT]
+## Chapter Title (brief, based on content)
+Proofread original content...
+
+## Next Chapter Title
+Proofread original content..."""
+
+            polished_chunks = []
+            previous_content = ""
+
+            for i, chunk in enumerate(chunks):
+                print(f"\n  → [{i+1}/{len(chunks)}] Polishing chunk {i+1} ({len(chunk)} chars)...", flush=True)
+
+                # Debug: Log chunk info
+                logger.info(f"Processing chunk {i+1}/{len(chunks)}: {len(chunk)} chars")
+
+                try:
+                    # Build messages following DeepSeek API format (system + user roles)
+                    if i == 0:
+                        # First chunk: establish chapter structure
+                        user_content = f"""{self._get_title_context(video_title, duration_minutes)}
+Please proofread the following speech transcript (part 1 of {len(chunks)} parts):
 
 {chunk}
 
-请根据新内容更新你的章节大纲。"""
-            
-            messages.append({"role": "user", "content": chunk_prompt})
-            
-            response, _ = self._call_deepseek(messages, max_tokens=4096)
-            if response:
-                messages.append({"role": "assistant", "content": response})
-                logger.info(f"Processed chunk {i}/{len(chunks)}")
-            else:
-                logger.warning(f"Failed to process chunk {i}, continuing...")
-        
-        # Final turn: Request polished output
-        polish_prompt = """现在请根据你的章节大纲，输出整理后的完整文本。
+Note: Start with chapter 1 and use ## markers for chapter divisions."""
+                    else:
+                        # Subsequent chunks: provide context from previous chunk
+                        previous_ending = self._get_last_section(previous_content)
+                        user_content = f"""This is part {i+1} of {len(chunks)} parts of the transcript.
 
-要求：
-1. 修正语音识别错误（错别字、专业术语等）
-2. 去除口语化表达和语气词
-3. 合并重复和冗余的表达
-4. 使用 ## 章节标题 格式标记各章节
-5. 保持原文的信息完整性
+For context, here's how the previous part ended:
+{previous_ending}
 
-请直接输出整理后的文本，格式如下：
-## 第一个章节标题
-该章节的整理后内容...
+Please continue proofreading this part:
 
-## 第二个章节标题
-该章节的整理后内容..."""
+{chunk}
 
-        messages.append({"role": "user", "content": polish_prompt})
-        
-        final_content, _ = self._call_deepseek(messages, max_tokens=self.max_tokens)
-        
-        if not final_content:
-            logger.error("Failed to get final polished text")
-            return None
-        
-        logger.info(f"Successfully polished text: {len(final_content)} chars output")
-        return final_content
+Note: Maintain chapter continuity with ## markers. Continue from where the previous part ended."""
+
+                    # Follow DeepSeek API format: system + user messages
+                    messages = [
+                        {"role": "system", "content": base_system_prompt},
+                        {"role": "user", "content": user_content}
+                    ]
+
+                    # Debug: Log message info
+                    total_input_chars = sum(len(m.get("content", "")) for m in messages)
+                    logger.info(f"Messages prepared: {len(messages)} messages, {total_input_chars} chars total")
+                    print(f"     [DEBUG] Total input: {total_input_chars} chars", flush=True)
+
+                    # Polish this chunk with 8K max output
+                    print(f"     Calling API...", end="", flush=True)
+                    polished_chunk = self._call_deepseek(messages, max_tokens=self.max_tokens)
+
+                    if polished_chunk:
+                        polished_chunks.append(polished_chunk)
+                        previous_content = polished_chunk
+                        print(f" Done! ({len(polished_chunk)} chars)")
+                        logger.info(f"Polished chunk {i+1}/{len(chunks)}: {len(polished_chunk)} chars")
+                    else:
+                        # Fallback to original chunk on failure
+                        logger.warning(f"Failed to polish chunk {i+1}, using raw text")
+                        print(f" Failed! Using raw chunk {i+1}")
+                        polished_chunks.append(chunk)
+                        previous_content = chunk
+
+                except Exception as chunk_error:
+                    # Catch any error during chunk processing
+                    logger.error(f"Exception while processing chunk {i+1}: {type(chunk_error).__name__}: {chunk_error}")
+                    print(f"\n[ERROR] Exception in chunk {i+1}: {type(chunk_error).__name__}")
+                    print(f"[ERROR] {chunk_error}")
+                    print(f"     Using raw chunk {i+1}")
+                    polished_chunks.append(chunk)
+                    previous_content = chunk
+                    # Continue to next chunk instead of crashing
+
+            # Merge all polished chunks
+            result = "\n\n".join(polished_chunks)
+            print(f"\n  → Combined polished text: {len(result)} chars, {len(polished_chunks)} chunks")
+            logger.info(f"Successfully polished text: {len(result)} chars from {len(chunks)} chunks")
+            return result
+
+        except Exception as e:
+            # Catch any unexpected error at function level
+            logger.error(f"Fatal error in _polish_multi_turn: {type(e).__name__}: {e}")
+            print(f"\n[FATAL ERROR] {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+            # Return original text as fallback
+            return text
+
+    def _get_last_section(self, text: str) -> str:
+        """
+        Extract the last section from previous chunk as context for the next chunk.
+
+        Args:
+            text: Previous polished chunk
+
+        Returns:
+            Last chapter or last 200 characters for context
+        """
+        lines = text.split('\n')
+
+        # Find the last ## chapter marker
+        last_chapter_idx = -1
+        for i in range(len(lines) - 1, -1, -1):
+            if lines[i].strip().startswith('## '):
+                last_chapter_idx = i
+                break
+
+        if last_chapter_idx >= 0:
+            # Return the last chapter content (limited to 500 chars)
+            last_section = '\n'.join(lines[last_chapter_idx:])
+            return last_section[:500] if len(last_section) > 500 else last_section
+        else:
+            # No chapter markers found, return last 200 chars
+            return text[-200:] if len(text) > 200 else text
+
+    def _get_title_context(self, video_title: str, duration_minutes: float) -> str:
+        """
+        Build title and duration context for the first chunk.
+
+        Args:
+            video_title: Video title
+            duration_minutes: Video duration in minutes
+
+        Returns:
+            Formatted context string
+        """
+        parts = []
+        if video_title:
+            parts.append(f"Video title: {video_title}")
+        if duration_minutes > 0:
+            parts.append(f"Duration: {duration_minutes:.0f} minutes")
+        return "\n".join(parts) + "\n" if parts else ""
 
     def _split_into_chunks(self, text: str) -> List[str]:
         """

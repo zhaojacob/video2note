@@ -28,20 +28,19 @@ class Translator:
     def __init__(self):
         """Initialize translator with DeepSeek API"""
         from config.settings import DEEPSEEK_CONFIG
-        
+
         self.api_key = DEEPSEEK_CONFIG.get("api_key") or os.getenv("DEEPSEEK_API_KEY", "")
         self.model = DEEPSEEK_CONFIG.get("model", "deepseek-chat")
         self.base_url = DEEPSEEK_CONFIG.get("base_url", "https://api.deepseek.com")
-        self.timeout = DEEPSEEK_CONFIG.get("timeout", 120)
-        
+
         if not self.api_key:
             logger.warning("DeepSeek API key not found. Translation will be skipped.")
             self.client = None
         else:
+            # Initialize client following DeepSeek official example (no timeout parameter)
             self.client = OpenAI(
                 api_key=self.api_key,
-                base_url=self.base_url,
-                timeout=self.timeout
+                base_url=self.base_url
             )
             logger.info("Translator initialized with DeepSeek API")
 
