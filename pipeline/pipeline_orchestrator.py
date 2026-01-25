@@ -2,6 +2,8 @@
 Main pipeline orchestrator for video note generation
 """
 import asyncio
+import json
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
