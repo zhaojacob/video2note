@@ -2,7 +2,7 @@
 Heading adder for adding section headings to polished text
 """
 import logging
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from openai import OpenAI
 from openai import APIError, RateLimitError, APITimeoutError, AuthenticationError
 
@@ -139,6 +139,151 @@ Requirements:
         else:
             logger.warning("Failed to add headings, returning original text")
             return polished_text
+
+    def generate_heading_markers(
+        self,
+        polished_text: str,
+        video_title: str = "",
+        max_headings: int = 15
+    ) -> List[Dict[str, Any]]:
+        """
+        Generate heading markers without returning full text.
+
+        Strategy:
+        1. Split text into paragraphs
+        2. Ask DeepSeek to identify topic transitions and generate headings
+        3. Return list of headings with paragraph indices
+
+        Args:
+            polished_text: Polished transcript text
+            video_title: Video title for context
+            max_headings: Maximum number of headings to generate
+
+        Returns:
+            List of {"title": str, "paragraph_index": int}
+        """
+        if not self.client:
+            logger.warning("HeadingAdder not available")
+            return []
+
+        if not polished_text or not polished_text.strip():
+            return []
+
+        # Split into paragraphs for indexing
+        paragraphs = polished_text.split('\n\n') if '\n\n' in polished_text else polished_text.split('\n')
+        num_paragraphs = len(paragraphs)
+
+        # For very long texts, use a summary approach
+        paragraph_sample = self._create_paragraph_sample(paragraphs, max_samples=50)
+
+        title_context = f"Video Title: {video_title}\n" if video_title else ""
+
+        system_prompt = f"""You are an expert at organizing content into clear sections.
+
+[TASK]
+Analyze the transcript paragraphs and identify natural topic transitions.
+Generate meaningful section headings for these transitions.
+
+[OUTPUT FORMAT]
+Return ONLY a JSON array of heading markers:
+[
+  {{"title": "Heading 1", "paragraph_index": 0}},
+  {{"title": "Heading 2", "paragraph_index": 5}},
+  ...
+]
+
+[REQUIREMENTS]
+- Title: 5-15 Chinese characters, descriptive and concise
+- Paragraph Index: Zero-based index where this heading should be inserted
+- First heading should be at paragraph_index 0 (introduction)
+- Distribute headings evenly across the content
+- Maximum {max_headings} headings
+- Use JSON format only, no other text"""
+
+        user_prompt = f"""{title_context}The transcript has {num_paragraphs} paragraphs.
+
+Here are the paragraphs (index: content):
+{paragraph_sample}
+
+Generate {max_headings} or fewer heading markers as JSON.
+
+Important: Ensure paragraph_index values are within range 0-{num_paragraphs-1}."""
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+
+        logger.info("Generating heading markers with DeepSeek...")
+        content = self._call_deepseek(messages, max_tokens=2000)  # Only need 2K tokens for JSON
+
+        if not content:
+            return []
+
+        # Parse JSON response
+        import json
+        try:
+            # Extract JSON array from response
+            content = content.strip()
+            if content.startswith('```'):
+                content = content.split('```')[1]
+                if content.startswith('json'):
+                    content = content[4:]
+            content = content.strip()
+
+            markers = json.loads(content)
+
+            # Validate markers
+            valid_markers = []
+            for marker in markers:
+                if isinstance(marker, dict) and "title" in marker and "paragraph_index" in marker:
+                    idx = marker["paragraph_index"]
+                    if 0 <= idx < num_paragraphs:
+                        valid_markers.append({
+                            "title": marker["title"],
+                            "paragraph_index": idx
+                        })
+
+            logger.info(f"Generated {len(valid_markers)} heading markers")
+            return valid_markers
+
+        except (json.JSONDecodeError, KeyError, IndexError) as e:
+            logger.error(f"Failed to parse heading markers: {e}")
+            return []
+
+    def _create_paragraph_sample(self, paragraphs: List[str], max_samples: int = 50) -> str:
+        """
+        Create a sampled representation of paragraphs for API input.
+
+        Args:
+            paragraphs: List of paragraph texts
+            max_samples: Maximum number of paragraphs to include
+
+        Returns:
+            Formatted string with paragraph indices and content
+        """
+        num_paragraphs = len(paragraphs)
+
+        if num_paragraphs <= max_samples:
+            # Include all paragraphs
+            sample = paragraphs
+        else:
+            # Sample evenly: first 10 + evenly distributed + last 10
+            step = (num_paragraphs - 20) // (max_samples - 20) if max_samples > 20 else 1
+            sample_indices = list(range(10))  # First 10
+            sample_indices.extend(range(10, num_paragraphs - 10, step))  # Middle samples
+            sample_indices.extend(range(num_paragraphs - 10, num_paragraphs))  # Last 10
+            sample_indices = sorted(set(sample_indices))  # Remove duplicates
+            sample = [paragraphs[i] for i in sample_indices]
+
+        # Format as "index: content"
+        lines = []
+        for i, para in enumerate(sample):
+            # Truncate long paragraphs
+            para_text = para[:150] + "..." if len(para) > 150 else para
+            lines.append(f"{i}: {para_text}")
+
+        return "\n".join(lines)
 
     def _call_deepseek(
         self,

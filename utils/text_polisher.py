@@ -291,6 +291,202 @@ class TextPolisher:
             logger.warning(f"Failed to load checkpoint: {e}")
             return None
 
+    def polish_transcript_json(
+        self,
+        segments: List[Dict[str, Any]],
+        video_title: str = "",
+        max_chars: int = 10000
+    ) -> Dict[str, Any]:
+        """
+        Polish transcript from JSON segments, returning structured data.
+        
+        Args:
+            segments: List of transcript segments [{"start": 0.0, "text": "..."}]
+            video_title: Video title
+            max_chars: Target characters per chunk (approx. 5000 tokens)
+            
+        Returns:
+            Structured data with sections, headers, and timestamped paragraphs
+        """
+        if not self.client:
+            logger.warning("TextPolisher not available")
+            return {"sections": []}
+            
+        if not segments:
+            return {"sections": []}
+            
+        # Split segments into chunks based on character count
+        chunks = self._chunk_segments_by_chars(segments, max_chars)
+        logger.info(f"Split {len(segments)} segments into {len(chunks)} chunks (target {max_chars} chars)")
+        print(f"  → Split into {len(chunks)} chunks (target {max_chars} chars), polishing incrementally...")
+        
+        all_sections = []
+        
+        for i, chunk in enumerate(chunks):
+            # Calculate actual char count for logging
+            chunk_chars = sum(len(s.get("text", "")) for s in chunk)
+            print(f"\n  → [{i+1}/{len(chunks)}] Polishing chunk {i+1} ({len(chunk)} segments, {chunk_chars} chars)...", flush=True)
+            
+            # Format chunk for LLM
+            chunk_json = self._format_segments_for_llm(chunk)
+            
+            # Context from previous chunk (last section title)
+            previous_context = ""
+            if all_sections:
+                last_section = all_sections[-1]
+                previous_context = f"Previous section: {last_section.get('title', 'Introduction')}"
+            
+            structured_chunk = self._polish_json_chunk(chunk_json, video_title, previous_context, i, len(chunks))
+            
+            if structured_chunk and "sections" in structured_chunk:
+                # Merge logic: if first section of new chunk has same title as last section of previous, merge them
+                if all_sections and structured_chunk["sections"]:
+                    last_old = all_sections[-1]
+                    first_new = structured_chunk["sections"][0]
+                    
+                    if last_old.get("title") == first_new.get("title"):
+                        # Merge paragraphs
+                        last_old["paragraphs"].extend(first_new["paragraphs"])
+                        # Add remaining sections
+                        all_sections.extend(structured_chunk["sections"][1:])
+                    else:
+                        all_sections.extend(structured_chunk["sections"])
+                else:
+                    all_sections.extend(structured_chunk.get("sections", []))
+            else:
+                logger.warning(f"Chunk {i+1} failed to produce valid structure")
+                
+        return {"sections": all_sections}
+
+    def _chunk_segments_by_chars(self, segments: List[Dict[str, Any]], max_chars: int) -> List[List[Dict[str, Any]]]:
+        """Split segments into chunks based on accumulated character count"""
+        chunks = []
+        current_chunk = []
+        current_chars = 0
+        
+        for seg in segments:
+            text_len = len(seg.get("text", ""))
+            
+            # If adding this segment exceeds limit AND we have content, start new chunk
+            if current_chars + text_len > max_chars and current_chunk:
+                chunks.append(current_chunk)
+                current_chunk = [seg]
+                current_chars = text_len
+            else:
+                current_chunk.append(seg)
+                current_chars += text_len
+                
+        # Add last chunk
+        if current_chunk:
+            chunks.append(current_chunk)
+            
+        return chunks
+
+    def _chunk_segments(self, segments: List[Dict[str, Any]], chunk_size: int) -> List[List[Dict[str, Any]]]:
+        """Legacy: Split segments into chunks by count"""
+        return [segments[i:i + chunk_size] for i in range(0, len(segments), chunk_size)]
+
+    def _format_segments_for_llm(self, segments: List[Dict[str, Any]]) -> str:
+        """Format segments as compact JSON-like string"""
+        import json
+        
+        compact_segs = []
+        for seg in segments:
+            # Format timestamp as HH:MM:SS
+            seconds = seg.get("start", 0)
+            hours = int(seconds // 3600)
+            minutes = int((seconds % 3600) // 60)
+            secs = int(seconds % 60)
+            ts = f"{hours:02d}:{minutes:02d}:{secs:02d}"
+            
+            compact_segs.append({
+                "t": ts,
+                "txt": seg.get("text", "").strip()
+            })
+            
+        return json.dumps(compact_segs, ensure_ascii=False)
+
+    def _polish_json_chunk(
+        self, 
+        chunk_json: str, 
+        video_title: str, 
+        context: str,
+        chunk_index: int,
+        total_chunks: int
+    ) -> Optional[Dict[str, Any]]:
+        """Call LLM to polish a chunk of segments into structured JSON"""
+        
+        system_prompt = """You are an expert content editor. Your task is to structure raw transcript segments into a polished, professional document.
+
+[INPUT FORMAT]
+A JSON list of segments: [{"t": "timestamp", "txt": "raw text"}, ...]
+
+[TASK]
+1. Consolidate adjacent segments into coherent, well-written paragraphs.
+2. Group paragraphs into logical SECTIONS with descriptive HEADERS.
+3. PRESERVE timestamps: Start each paragraph with the timestamp of its first segment.
+4. Output strict JSON format.
+
+[STRICT RULES]
+- Do NOT rewrite the meaning. Polish grammar and flow only.
+- Do NOT omit content.
+- Headers should be descriptive (5-15 chars).
+- Timestamps MUST be in "HH:MM:SS" format.
+
+[OUTPUT SCHEMA]
+{
+  "sections": [
+    {
+      "title": "Section Title",
+      "paragraphs": [
+        {
+          "timestamp": "HH:MM:SS",
+          "content": "Polished paragraph text..."
+        }
+      ]
+    }
+  ]
+}"""
+
+        user_prompt = f"""Video Title: {video_title}
+Context: {context}
+Part {chunk_index+1} of {total_chunks}
+
+Raw Segments:
+{chunk_json}
+
+Please structure this content into sections and paragraphs with timestamps. Return JSON only."""
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+        
+        print(f"     Calling API...", end="", flush=True)
+        content = self._call_deepseek(messages, max_tokens=4000)
+        
+        if not content:
+            print(" Failed!")
+            return None
+            
+        print(f" Done! ({len(content)} chars)")
+        
+        # Parse JSON
+        import json
+        try:
+            # Extract JSON from markdown code block if present
+            if "```" in content:
+                content = content.split("```json")[-1].split("```")[0].strip()
+            elif "```" in content: # generic block
+                content = content.split("```")[-1].split("```")[0].strip()
+                
+            data = json.loads(content)
+            return data
+        except Exception as e:
+            logger.error(f"Failed to parse JSON response: {e}")
+            logger.debug(f"Raw content: {content}")
+            return None
+
     def polish(self, raw_transcript: str, video_title: str = "", 
                duration_minutes: float = 0) -> Optional[str]:
         """

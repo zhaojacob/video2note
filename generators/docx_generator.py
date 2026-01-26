@@ -94,7 +94,9 @@ class DocxGenerator:
             data.get("sections", []),
             data.get("polished_text", ""),
             data.get("chapters", []),
-            data.get("statistics", {}).get("total_frames", 0)
+            data.get("heading_markers", []),
+            data.get("statistics", {}).get("total_frames", 0),
+            data.get("structured_sections", [])
         )
 
         # Add statistics
@@ -233,21 +235,34 @@ class DocxGenerator:
         sections: List[Dict[str, Any]],
         polished_text: str = "",
         chapters: List[Dict[str, Any]] = None,
-        total_frames: int = 0
+        heading_markers: List[Dict[str, Any]] = None,
+        total_frames: int = 0,
+        structured_sections: List[Dict[str, Any]] = None
     ):
         """Add transcript section with images"""
         heading = doc.add_heading("正文", level=2)
         for run in heading.runs:
             self._set_run_font(run, size=FONT_SIZE_HEADING, bold=True)
-        
+
         # Extract images from full_transcript for later insertion
         images = []
         if full_transcript:
             images = [item for item in full_transcript if item.get("type") == "image"]
-        
+
+        # Priority 0: Use structured sections (JSON pipeline)
+        if structured_sections:
+            self._render_structured_sections(doc, structured_sections)
+            return
+
         # Prefer chapters (with titles and structured content)
         if chapters:
             self._render_chapters_with_images(doc, chapters, images)
+        # NEW: Use heading markers with full_transcript (has timestamps + images aligned)
+        elif heading_markers and full_transcript:
+            self._render_text_with_markers_aligned(doc, full_transcript, heading_markers)
+        # Fallback: heading markers with polished text (no timestamps)
+        elif heading_markers and polished_text:
+            self._render_polished_text_with_images(doc, polished_text, images, heading_markers)
         # Fallback to polished text (with punctuation, paragraphs)
         elif polished_text:
             self._render_polished_text_with_images(doc, polished_text, images)
@@ -261,6 +276,38 @@ class DocxGenerator:
             p = doc.add_paragraph()
             run = p.add_run("（无转录内容）")
             self._set_run_font(run, color=COLOR_GRAY, italic=True)
+
+    def _render_structured_sections(self, doc: Document, sections: List[Dict[str, Any]]):
+        """Render structured sections with headers, timestamps and images"""
+        for section in sections:
+            # Section Header
+            title = section.get("title", "")
+            if title:
+                heading = doc.add_heading(title, level=3)
+                self._style_heading(heading)
+            
+            for para in section.get("paragraphs", []):
+                # Paragraph
+                p = doc.add_paragraph()
+                p.paragraph_format.first_line_indent = Inches(0.5)
+                p.paragraph_format.line_spacing = 1.5
+                
+                # Timestamp
+                timestamp = para.get("timestamp", "")
+                if timestamp:
+                    ts_run = p.add_run(f"[{timestamp}] ")
+                    self._set_run_font(ts_run, bold=True)
+                
+                # Content
+                content = para.get("content", "").strip()
+                if content:
+                    run = p.add_run(content)
+                    self._set_run_font(run)
+                
+                # Images
+                images = para.get("images", [])
+                for img in images:
+                    self._add_transcript_image(doc, img)
 
     def _render_chapters_with_images(
         self, 
@@ -284,12 +331,7 @@ class DocxGenerator:
             
             # Add chapter title as heading level 3
             chapter_heading = doc.add_heading(title, level=3)
-            for run in chapter_heading.runs:
-                run.font.name = FONT_ENGLISH
-                run.font.size = Pt(14)
-                run.font.bold = True
-                run.font.color.rgb = RGBColor(0, 51, 102)
-                run._element.rPr.rFonts.set(qn('w:eastAsia'), FONT_CHINESE)
+            self._style_heading(chapter_heading)
             
             # Add images for this chapter (distribute evenly)
             chapter_images_count = images_per_chapter
@@ -324,10 +366,16 @@ class DocxGenerator:
         self,
         doc: Document,
         text: str,
-        images: List[Dict[str, Any]]
+        images: List[Dict[str, Any]],
+        heading_markers: List[Dict[str, Any]] = None
     ):
         """Render polished text with images inserted"""
-        # Check if text contains chapter markers
+        # Priority 1: Use heading markers if available (NEW!)
+        if heading_markers:
+            self._render_text_with_markers(doc, text, images, heading_markers)
+            return
+
+        # Priority 2: Check if text contains chapter markers (legacy)
         if '## ' in text:
             from utils.text_polisher import TextPolisher
             polisher = TextPolisher()
@@ -335,25 +383,184 @@ class DocxGenerator:
             if chapters:
                 self._render_chapters_with_images(doc, chapters, images)
                 return
-        
-        # Add all images at the beginning
+
+        # Priority 3: Add all images at the beginning
         for image in images:
             self._add_transcript_image(doc, image)
-        
+
         # Then add text paragraphs
         paragraphs = text.split('\n\n') if '\n\n' in text else text.split('\n')
-        
+
         for para_text in paragraphs:
             para_text = para_text.strip()
             if not para_text:
                 continue
-            
+
             p = doc.add_paragraph()
             p.paragraph_format.first_line_indent = Inches(0.5)
             p.paragraph_format.line_spacing = 1.5
-            
+
             run = p.add_run(para_text)
             self._set_run_font(run)
+
+    def _render_text_with_markers(
+        self,
+        doc: Document,
+        text: str,
+        images: List[Dict[str, Any]],
+        heading_markers: List[Dict[str, Any]]
+    ):
+        """
+        Render text with heading markers inserted at paragraph positions
+
+        Args:
+            doc: Document object
+            text: Full polished text (paragraph-separated by \\n\\n)
+            images: List of image items to distribute
+            heading_markers: List of {"title": str, "paragraph_index": int}
+        """
+        paragraphs = text.split('\n\n') if '\n\n' in text else text.split('\n')
+
+        # Distribute images across heading markers
+        images_per_marker = max(1, len(images) // len(heading_markers)) if heading_markers else len(images)
+        image_idx = 0
+
+        for i, para_text in enumerate(paragraphs):
+            # Check if we need to insert a heading at this paragraph
+            for marker in heading_markers:
+                if marker["paragraph_index"] == i:
+                    # Insert heading
+                    heading = doc.add_heading(marker["title"], level=3)
+                    self._style_heading(heading)
+
+                    # Add images for this section
+                    for _ in range(images_per_marker):
+                        if image_idx < len(images):
+                            self._add_transcript_image(doc, images[image_idx])
+                            image_idx += 1
+
+            # Add paragraph
+            if para_text.strip():
+                p = doc.add_paragraph()
+                p.paragraph_format.first_line_indent = Inches(0.5)
+                p.paragraph_format.line_spacing = 1.5
+                run = p.add_run(para_text.strip())
+                self._set_run_font(run)
+
+    def _render_text_with_markers_aligned(
+        self,
+        doc: Document,
+        full_transcript: List[Dict[str, Any]],
+        heading_markers: List[Dict[str, Any]]
+    ):
+        """
+        Render full_transcript with heading markers inserted at paragraph positions
+
+        This method uses full_transcript (which has timestamps) instead of polished_text,
+        ensuring that:
+        1. All paragraphs have timestamps at the beginning
+        2. Images are aligned with paragraphs based on their timestamps
+
+        Args:
+            doc: Document object
+            full_transcript: Items with timestamps (already sorted with images interleaved)
+            heading_markers: List of {"title": str, "paragraph_index": int}
+        """
+        # Step 1: Group consecutive text items into paragraphs
+        # This uses the same 3-second merging logic as the text processor
+        paragraphs_with_timestamps = []
+        current_para = None
+
+        for item in full_transcript:
+            if item["type"] == "text":
+                # Check if we should merge with current paragraph
+                # Merge consecutive items within 3 seconds
+                if current_para:
+                    time_gap = item["timestamp"] - current_para["end_time"]
+                    if time_gap < 3.0:
+                        # Merge with current paragraph
+                        current_para["content"] += " " + item["content"]
+                        current_para["end_time"] = item.get("end_time", item["timestamp"])
+                        current_para["timestamp_formatted"] = item.get("timestamp_formatted", "")
+                        continue
+
+                # Save current paragraph if exists
+                if current_para:
+                    paragraphs_with_timestamps.append(current_para)
+
+                # Start new paragraph
+                current_para = {
+                    "type": "text",
+                    "timestamp": item["timestamp"],
+                    "end_time": item.get("end_time", item["timestamp"]),
+                    "content": item.get("content", ""),
+                    "timestamp_formatted": item.get("timestamp_formatted", ""),
+                    "content_translated": item.get("content_translated", "")
+                }
+            else:  # Image
+                # Flush paragraph before image
+                if current_para:
+                    paragraphs_with_timestamps.append(current_para)
+                    current_para = None
+                # Add image as separate item
+                paragraphs_with_timestamps.append(item)
+
+        # Don't forget last paragraph
+        if current_para:
+            paragraphs_with_timestamps.append(current_para)
+
+        # Step 2: Render with headings and proper image alignment
+        para_idx = 0
+        for item in paragraphs_with_timestamps:
+            if item["type"] == "text":
+                # Check if heading should be inserted before this paragraph
+                for marker in heading_markers:
+                    if marker["paragraph_index"] == para_idx:
+                        # Insert heading
+                        heading = doc.add_heading(marker["title"], level=3)
+                        self._style_heading(heading)
+
+                # Add paragraph WITH timestamp
+                p = doc.add_paragraph()
+                p.paragraph_format.first_line_indent = Inches(0.5)
+                p.paragraph_format.line_spacing = 1.5
+
+                # Add timestamp in bold
+                timestamp = item.get("timestamp_formatted", "")
+                if not timestamp:
+                    timestamp = f"[{self._format_timestamp(item['timestamp'])}]"
+                ts_run = p.add_run(f"{timestamp} ")
+                self._set_run_font(ts_run, bold=True)
+
+                # Add content
+                content = item.get("content", "").strip()
+                if content:
+                    content_run = p.add_run(content)
+                    self._set_run_font(content_run)
+
+                # Add translation if available
+                content_translated = item.get("content_translated", "").strip()
+                if content_translated:
+                    p2 = doc.add_paragraph()
+                    p2.paragraph_format.left_indent = Inches(0.3)
+                    p2.paragraph_format.line_spacing = 1.5
+                    trans_run = p2.add_run(content_translated)
+                    self._set_run_font(trans_run, color=COLOR_GRAY, italic=True)
+
+                para_idx += 1
+
+            elif item["type"] == "image":
+                # Add image (already at correct position in list based on timestamp)
+                self._add_transcript_image(doc, item)
+
+    def _style_heading(self, heading):
+        """Apply consistent styling to level 3 headings"""
+        for run in heading.runs:
+            run.font.name = FONT_ENGLISH
+            run.font.size = Pt(14)
+            run.font.bold = True
+            run.font.color.rgb = RGBColor(0, 51, 102)
+            run._element.rPr.rFonts.set(qn('w:eastAsia'), FONT_CHINESE)
 
     def _render_chapters(self, doc: Document, chapters: List[Dict[str, Any]]):
         """Render chapters with titles and content (no images)"""

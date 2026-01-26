@@ -79,7 +79,8 @@ class MarkdownGenerator:
             data.get('sections', []),
             relative_images,
             data.get('polished_text', ''),
-            data.get('chapters', [])
+            data.get('chapters', []),
+            data.get('structured_sections', [])
         ))
 
         lines.append("---\n")
@@ -191,7 +192,8 @@ class MarkdownGenerator:
         sections: List[Dict[str, Any]],
         relative_images: bool,
         polished_text: str = "",
-        chapters: List[Dict[str, Any]] = None
+        chapters: List[Dict[str, Any]] = None,
+        structured_sections: List[Dict[str, Any]] = None
     ) -> List[str]:
         """
         Generate transcript section with images inserted at timestamps
@@ -203,6 +205,11 @@ class MarkdownGenerator:
             "",
         ]
         
+        # Priority 0: Use structured sections (JSON pipeline)
+        if structured_sections:
+            lines.extend(self._render_structured_sections(structured_sections, relative_images))
+            return lines
+
         # Extract images from full_transcript for later insertion
         images = []
         if full_transcript:
@@ -224,6 +231,32 @@ class MarkdownGenerator:
             lines.append("*（无转录内容）*")
             lines.append("")
         
+        return lines
+
+    def _render_structured_sections(self, sections: List[Dict[str, Any]], relative_images: bool) -> List[str]:
+        """Render structured sections with headers, timestamps and images"""
+        lines = []
+        for section in sections:
+            # Section Header
+            title = section.get("title", "")
+            if title:
+                lines.append(f"### {title}")
+                lines.append("")
+            
+            for para in section.get("paragraphs", []):
+                # Timestamp
+                timestamp = para.get("timestamp", "")
+                content = para.get("content", "").strip()
+                
+                if content:
+                    ts_mark = f"**[{timestamp}]** " if timestamp else ""
+                    lines.append(f"{ts_mark}{content}")
+                    lines.append("")
+                
+                # Images
+                images = para.get("images", [])
+                for img in images:
+                    lines.extend(self._render_image_item(img, relative_images))
         return lines
 
     def _render_chapters_with_images(

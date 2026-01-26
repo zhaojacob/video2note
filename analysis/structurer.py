@@ -99,46 +99,56 @@ class Structurer:
         polished_text = ""
         chapters = []
         
-        # Step 1: Polish transcript (if enabled)
-        if enable_polish and raw_transcript_text:
-            logger.info("Polishing transcript with DeepSeek...")
-            print("\n[Text Polish] Polishing transcript with DeepSeek...")
+        # Initialize polish results
+        polished_sections = []
+        polished_text = raw_transcript_text
+        
+        # Step 1: Polish transcript (JSON structured)
+        if enable_polish and transcript:
+            logger.info("Polishing transcript with DeepSeek (Structured JSON)...")
+            print("\n[Text Polish] Polishing transcript with DeepSeek (Structured JSON)...")
             try:
                 polisher = self._get_text_polisher()
                 if polisher.is_available():
-                    polished_text = polisher.polish(
-                        raw_transcript_text,
-                        video_title=video_info.get("title", ""),
-                        duration_minutes=duration_minutes
+                    # Use new JSON polishing method
+                    polish_result = polisher.polish_transcript_json(
+                        transcript,
+                        video_title=video_info.get("title", "")
                     )
-                    if polished_text:
-                        chapters = polisher.extract_chapters(polished_text)
-                        print(f"[Text Polish] Complete ({len(polished_text)} chars, {len(chapters)} chapters)")
+                    
+                    polished_sections = polish_result.get("sections", [])
+                    
+                    if polished_sections:
+                        # Reconstruct polished text for summary generation
+                        all_paragraphs = []
+                        for section in polished_sections:
+                            for para in section.get("paragraphs", []):
+                                all_paragraphs.append(para.get("content", ""))
+                        polished_text = "\n\n".join(all_paragraphs)
+                        
+                        print(f"[Text Polish] Complete ({len(polished_sections)} sections)")
+                        
+                        # Interleave images into sections
+                        self._interleave_images_into_sections(polished_sections, frame_analyses)
                     else:
-                        print("[Text Polish] No output, using raw transcript")
-                        polished_text = raw_transcript_text
+                        print("[Text Polish] No structured output, using raw transcript")
                 else:
                     print("[Text Polish] Skipped (no DeepSeek API key)")
-                    polished_text = raw_transcript_text
             except Exception as e:
                 logger.error(f"Failed to polish transcript: {e}")
                 print(f"[Text Polish] Failed: {e}")
-                polished_text = raw_transcript_text
-        else:
-            polished_text = raw_transcript_text
-        
-        # Use polished text for summary generation
-        full_transcript_text = polished_text if polished_text else raw_transcript_text
-        
+                import traceback
+                traceback.print_exc()
+
         # Step 2: Generate AI summary
-        if summary is None and generate_ai_summary and full_transcript_text:
+        if summary is None and generate_ai_summary and polished_text:
             logger.info("Generating AI summary with DeepSeek Reasoner...")
             print("\n[AI Summary] Generating summary with DeepSeek Reasoner...")
             try:
                 summary_gen = self._get_summary_generator()
                 if summary_gen.is_available():
                     summary = summary_gen.generate_summary(
-                        full_transcript_text,
+                        polished_text,
                         video_info.get("title", "")
                     )
                     if summary:
@@ -151,42 +161,6 @@ class Structurer:
                 logger.error(f"Failed to generate AI summary: {e}")
                 print(f"[AI Summary] Failed: {e}")
                 summary = ""
-
-        # Step 3: Add headings to polished text (NEW!)
-        if polished_text:
-            logger.info("Adding section headings...")
-            print("\n[Headings] Adding section headings...")
-            try:
-                from utils.heading_adder import HeadingAdder
-                heading_adder = HeadingAdder()
-                if heading_adder.is_available():
-                    # 根据视频长度调整max_headings
-                    if duration_minutes > 60:
-                        max_headings = 20
-                    elif duration_minutes > 30:
-                        max_headings = 15
-                    else:
-                        max_headings = 10
-
-                    text_with_headings = heading_adder.add_headings(
-                        polished_text,
-                        video_info.get("title", ""),
-                        max_headings=max_headings
-                    )
-
-                    if text_with_headings and text_with_headings != polished_text:
-                        polished_text = text_with_headings
-                        # 提取chapters
-                        polisher = self._get_text_polisher()
-                        chapters = polisher.extract_chapters(polished_text)
-                        print(f"[Headings] Added {len(chapters)} headings")
-                    else:
-                        print("[Headings] Skipped or failed")
-                else:
-                    print("[Headings] Skipped (no DeepSeek API key)")
-            except Exception as e:
-                logger.error(f"Failed to add headings: {e}")
-                print(f"[Headings] Failed: {e}")
 
         # Translation handling
         title_translated = ""
@@ -238,11 +212,13 @@ class Structurer:
             "summary": summary or "",
             "summary_translated": summary_translated,
             "keywords": keywords or content.get("topics", []),
-            # Polished transcript text (with punctuation, paragraphs, simplified Chinese)
+            # Polished transcript text (reconstructed)
             "polished_text": polished_text or "",
-            # Chapters from TextPolisher (with titles)
-            "chapters": chapters or [],
-            # New structure: full transcript with timestamps and images
+            # Structured sections (the source of truth)
+            "structured_sections": polished_sections,
+            # Legacy fields for backward compatibility
+            "chapters": [{"title": s.get("title", ""), "content": "\n".join([p.get("content", "") for p in s.get("paragraphs", [])])} for s in polished_sections] if polished_sections else [],
+            "heading_markers": [],
             "full_transcript": self._create_full_transcript_with_images(
                 transcript,
                 frame_analyses
@@ -268,6 +244,72 @@ class Structurer:
         logger.info(f"Structured {len(structured['sections'])} sections")
 
         return structured
+
+    def _interleave_images_into_sections(
+        self,
+        sections: List[Dict[str, Any]],
+        frame_analyses: List[Dict[str, Any]]
+    ):
+        """
+        Interleave images into structured sections based on timestamps
+        """
+        # Sort frames by timestamp
+        sorted_frames = sorted(
+            [f for f in frame_analyses if f.get("success")], 
+            key=lambda x: x.get("timestamp", 0)
+        )
+        
+        # Flatten paragraphs for easy iteration
+        all_paragraphs = []
+        for section in sections:
+            for para in section.get("paragraphs", []):
+                # Parse timestamp to seconds
+                ts_str = para.get("timestamp", "00:00:00")
+                parts = ts_str.split(":")
+                seconds = 0
+                if len(parts) == 3:
+                    seconds = int(parts[0])*3600 + int(parts[1])*60 + int(parts[2])
+                elif len(parts) == 2:
+                    seconds = int(parts[0])*60 + int(parts[1])
+                
+                para["timestamp_seconds"] = seconds
+                all_paragraphs.append(para)
+                
+        # Distribute images
+        current_frame_idx = 0
+        for i, para in enumerate(all_paragraphs):
+            para_start = para["timestamp_seconds"]
+            # Next paragraph start or end of video (infinity)
+            para_end = all_paragraphs[i+1]["timestamp_seconds"] if i < len(all_paragraphs)-1 else float('inf')
+            
+            para["images"] = []
+            
+            while current_frame_idx < len(sorted_frames):
+                frame = sorted_frames[current_frame_idx]
+                frame_ts = frame.get("timestamp", 0)
+                
+                if frame_ts < para_start:
+                    # Frame is before this paragraph (should have been attached to previous, or it's very early)
+                    # Attach to this one if it's the first
+                    if i == 0:
+                        self._add_frame_to_para(para, frame)
+                    current_frame_idx += 1
+                elif frame_ts >= para_start and frame_ts < para_end:
+                    # Frame belongs to this paragraph
+                    self._add_frame_to_para(para, frame)
+                    current_frame_idx += 1
+                else:
+                    # Frame is after this paragraph
+                    break
+                    
+    def _add_frame_to_para(self, para, frame):
+        """Add frame to paragraph images list"""
+        para["images"].append({
+            "path": str(frame.get("frame_path", "")),
+            "timestamp": frame.get("timestamp", 0),
+            "caption": frame.get("description", "")[:200] if frame.get("description") else "",
+            "image_type": self._classify_frame_type(frame)
+        })
 
     def _get_full_transcript_text(self, transcript: List[Dict[str, Any]]) -> str:
         """
