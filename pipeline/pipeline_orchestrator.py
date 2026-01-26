@@ -104,7 +104,9 @@ class PipelineOrchestrator:
         local_video: str = None,
         skip_transcription: bool = False,
         skip_analysis: bool = False,
-        frame_strategy: str = "interval",
+        frame_strategy: str = "uniform",
+        frame_interval: float = 10.0,
+        max_frames: int = 5,
         translate_to: str = None
     ) -> Dict[str, Any]:
         """
@@ -112,7 +114,9 @@ class PipelineOrchestrator:
 
         Args:
             video_url: Video URL (or dummy if using local_video)
-            frame_strategy: Frame extraction strategy ('transcript', 'interval', 'scene')
+            frame_strategy: Frame extraction strategy ('uniform', 'paragraph', 'fixed_interval', 'transcript', 'interval', 'scene')
+            frame_interval: Fixed interval in seconds for fixed_interval strategy (default: 10.0)
+            max_frames: Maximum number of frames to extract (default: 5)
             output_formats: List of output formats (docx, markdown, json)
             local_video: Path to local video file (skip download)
             skip_transcription: Skip transcription step
@@ -223,34 +227,49 @@ class PipelineOrchestrator:
             print("=" * 60)
 
             # Determine extraction method based on strategy
-            if frame_strategy == "scene":
+            if frame_strategy == "uniform":
+                method_name = "Uniform distribution (opening + 4 evenly spaced)"
+            elif frame_strategy == "paragraph":
+                method_name = "Paragraph boundaries (opening + 4 at speech gaps)"
+            elif frame_strategy == "fixed_interval":
+                method_name = f"Fixed interval (opening + every {frame_interval}s)"
+            elif frame_strategy == "scene":
                 method_name = "Scene detection (fewer frames, saves API calls)"
             elif frame_strategy == "interval" or skip_transcription:
                 method_name = "Interval-based"
-            else:
+            else:  # transcript
                 method_name = "Transcript-aligned"
-            
+
             print(f"[INFO] Method: {method_name}")
+            print(f"[INFO] Max frames: {max_frames}")
             print("[PROGRESS] Extracting...", end="", flush=True)
 
-            if frame_strategy == "scene":
-                # Use scene detection for key frames (fewer frames, fewer API calls)
+            if frame_strategy in ["uniform", "paragraph", "fixed_interval"]:
+                # Use new strategy-based extraction
+                frames = self.frame_extractor.extract_frames_with_strategy(
+                    video_info["filepath"],
+                    strategy=frame_strategy,
+                    transcript=transcript if frame_strategy == "paragraph" else None,
+                    max_frames=max_frames
+                )
+            elif frame_strategy == "scene":
+                # Use scene detection for key frames
                 frames = self.frame_extractor.extract_key_frames(
                     video_info["filepath"],
-                    max_frames=5  # Limit to 5 key frames max
+                    max_frames=max_frames
                 )
             elif skip_transcription or frame_strategy == "interval":
-                # Use interval-based extraction (max 5 frames)
+                # Use interval-based extraction
                 frames = self.frame_extractor.extract_frames_by_interval(
                     video_info["filepath"],
-                    max_frames=5
+                    max_frames=max_frames
                 )
-            else:
-                # Use transcript-aligned extraction (default, max 5 frames)
+            else:  # transcript
+                # Use transcript-aligned extraction
                 frames = self.frame_extractor.extract_frames_by_transcript(
                     video_info["filepath"],
                     transcript,
-                    max_frames=5
+                    max_frames=max_frames
                 )
 
             print(" Complete!")

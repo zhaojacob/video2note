@@ -88,9 +88,23 @@ Examples:
     # Frame extraction options
     parser.add_argument(
         "--frame-strategy",
-        choices=["transcript", "interval", "scene"],
-        default="interval",
-        help="Frame extraction strategy: interval (fixed interval, default), transcript (align to speech), scene (scene detection)"
+        choices=["uniform", "paragraph", "fixed_interval", "transcript", "interval", "scene"],
+        default="uniform",
+        help="Frame extraction strategy: uniform (opening + 4 evenly distributed, default), paragraph (opening + speech boundaries), fixed_interval (opening + every N seconds), transcript (align to speech), interval (fixed interval), scene (scene detection)"
+    )
+
+    parser.add_argument(
+        "--frame-interval",
+        type=float,
+        default=10.0,
+        help="Fixed interval in seconds for fixed_interval strategy (default: 10.0)"
+    )
+
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=5,
+        help="Maximum number of frames to extract (default: 5)"
     )
 
     # Translation options
@@ -252,6 +266,8 @@ def main():
             skip_transcription=args.skip_transcription,
             skip_analysis=args.skip_analysis,
             frame_strategy=args.frame_strategy,
+            frame_interval=args.frame_interval,
+            max_frames=args.max_frames,
             translate_to=args.translate
         )
 
