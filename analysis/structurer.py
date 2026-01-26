@@ -324,7 +324,7 @@ class Structurer:
                 content_items.append({
                     "type": "image",
                     "timestamp": frame.get("timestamp", 0),
-                    "path": frame.get("frame_path", ""),
+                    "path": str(frame.get("frame_path", "")),
                     "caption": frame.get("description", "")[:200] if frame.get("description") else "",
                     "image_type": self._classify_frame_type(frame)
                 })
@@ -402,7 +402,7 @@ class Structurer:
             for frame in segment.get("frames", []):
                 if frame.get("success"):
                     section_frames.append({
-                        "path": frame["frame_path"],
+                        "path": str(frame["frame_path"]),
                         "timestamp": frame["timestamp"],
                         "caption": frame.get("description", "")[:200],
                         "type": self._classify_frame_type(frame),

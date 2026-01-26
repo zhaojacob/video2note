@@ -42,7 +42,7 @@ class HeadingAdder:
             self.client = OpenAI(
                 api_key=self.api_key,
                 base_url=self.base_url,
-                timeout=180.0,  # 3 minute timeout
+                timeout=300.0,  # 5 minute timeout
                 max_retries=2
             )
             logger.info(f"HeadingAdder initialized: model={self.model}, max_tokens={self.max_tokens}")

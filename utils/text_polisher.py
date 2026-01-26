@@ -248,7 +248,7 @@ class TextPolisher:
         from config.settings import DEEPSEEK_CONFIG, OUTPUT_DIR
 
         safe_title = sanitize_filename(video_title or "untitled")
-        checkpoint_dir = Path(DEEPSEEK_CONFIG.get("checkpoint_dir", OUTPUT_DIR["transcripts"]))
+        checkpoint_dir = Path(DEEPSEEK_CONFIG.get("checkpoint_dir", OUTPUT_DIR / "transcripts"))
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
         return checkpoint_dir / f"{safe_title}_polish_checkpoint.json"
