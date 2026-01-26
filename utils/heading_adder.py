@@ -3,10 +3,9 @@ Heading adder for adding section headings to polished text
 """
 import logging
 from typing import Optional, List, Dict, Any
-from openai import OpenAI
-from openai import APIError, RateLimitError, APITimeoutError, AuthenticationError
 
-from config.settings import DEEPSEEK_CONFIG
+from utils.llm_client import LLMClient
+from config.settings import TEXT_LLM_PROVIDER, TEXT_LLM_CONFIGS
 
 logger = logging.getLogger(__name__)
 
@@ -30,22 +29,30 @@ class HeadingAdder:
         Args:
             api_key: DeepSeek API key (optional, uses config if not provided)
         """
-        self.api_key = api_key or DEEPSEEK_CONFIG.get("api_key")
-        self.base_url = DEEPSEEK_CONFIG.get("base_url", "https://api.deepseek.com")
-        self.model = DEEPSEEK_CONFIG.get("model", "deepseek-chat")
-        self.max_tokens = DEEPSEEK_CONFIG.get("max_tokens", 8192)
+        provider = TEXT_LLM_PROVIDER
+        config = TEXT_LLM_CONFIGS.get(provider, TEXT_LLM_CONFIGS.get("modelscope", {}))
+
+        self.provider = provider
+        self.api_key = api_key or config.get("api_key")
+        self.base_url = config.get("base_url")
+        self.model = config.get("model")
+        self.max_tokens = config.get("max_tokens", 8192)
+        self.extra_body = config.get("extra_body")
 
         if not self.api_key:
-            logger.warning("DeepSeek API key not configured, HeadingAdder will be disabled")
+            logger.warning("Text LLM API key not configured, HeadingAdder will be disabled")
             self.client = None
         else:
-            self.client = OpenAI(
+            self.client = LLMClient(
                 api_key=self.api_key,
                 base_url=self.base_url,
+                model=self.model,
+                default_max_tokens=self.max_tokens,
+                extra_body=self.extra_body,
                 timeout=300.0,  # 5 minute timeout
                 max_retries=2
             )
-            logger.info(f"HeadingAdder initialized: model={self.model}, max_tokens={self.max_tokens}")
+            logger.info(f"HeadingAdder initialized: provider={self.provider}, model={self.model}, max_tokens={self.max_tokens}")
 
     def is_available(self) -> bool:
         """Check if adder is available"""
@@ -292,7 +299,7 @@ Important: Ensure paragraph_index values are within range 0-{num_paragraphs-1}."
         retry_count: int = 2
     ) -> Optional[str]:
         """
-        Call DeepSeek API with retry logic
+        Call text LLM with retry logic (using LLMClient)
 
         Args:
             messages: Conversation messages
@@ -303,54 +310,15 @@ Important: Ensure paragraph_index values are within range 0-{num_paragraphs-1}."
             Response content string, or None if failed
         """
         if not self.client:
-            logger.error("DeepSeek client not initialized")
+            logger.error("Text LLM client not initialized")
             return None
 
-        params = {
-            "model": self.model,
-            "messages": messages,
-            "max_tokens": max_tokens or self.max_tokens,
-            "temperature": 0.5,  # Balanced for heading generation
-            "stream": False,
-        }
+        # Use LLMClient's chat_completion method with built-in error handling and retries
+        content = self.client.chat_completion(
+            messages=messages,
+            max_tokens=max_tokens or self.max_tokens,
+            temperature=0.5,  # Balanced for heading generation
+            retry_count=retry_count
+        )
 
-        input_chars = sum(len(m.get("content", "")) for m in messages)
-        logger.info(f"DeepSeek request: input_chars={input_chars}")
-
-        for attempt in range(retry_count + 1):
-            try:
-                response = self.client.chat.completions.create(**params)
-                content = response.choices[0].message.content
-
-                logger.info(f"DeepSeek success: output_chars={len(content) if content else 0}")
-                return content
-
-            except AuthenticationError as e:
-                logger.error(f"Authentication Error: {e}")
-                return None
-
-            except RateLimitError as e:
-                logger.warning(f"Rate Limit Error (attempt {attempt + 1}): {e}")
-                if attempt < retry_count:
-                    import time
-                    time.sleep(60)
-                else:
-                    return None
-
-            except (APITimeoutError, APIError) as e:
-                logger.warning(f"API Error (attempt {attempt + 1}): {e}")
-                if attempt < retry_count:
-                    import time
-                    time.sleep(10)
-                else:
-                    return None
-
-            except Exception as e:
-                logger.error(f"Unexpected Error: {type(e).__name__}: {e}")
-                if attempt < retry_count:
-                    import time
-                    time.sleep(5)
-                else:
-                    return None
-
-        return None
+        return content

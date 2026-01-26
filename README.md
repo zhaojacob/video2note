@@ -44,10 +44,18 @@ python main.py --setup
 ```
 
 Edit `.env` file with your API keys:
-```
+```bash
+# Vision APIs (required for image analysis)
 GLM_API_KEY=your_glm_api_key_here
 DOUBAO_API_KEY=your_doubao_api_key_here
-DEEPSEEK_API_KEY=your_deepseek_api_key_here  # For text polishing and summaries
+
+# Text LLM APIs (required for text polishing, summaries, translations, headings)
+# Choose one or configure both for fallback
+MODELSCOPE_TOKEN=your_modelscope_token_here        # Default: DeepSeek-V3.2 via ModelScope
+DEEPSEEK_API_KEY=your_deepseek_api_key_here       # Fallback: DeepSeek official API
+
+# Optional: Text LLM provider selection
+TEXT_LLM_PROVIDER=modelscope  # Options: modelscope (default), deepseek
 ```
 
 ### 4. Generate Notes
@@ -83,8 +91,9 @@ video_note_system/
 │   ├── image_analyzer.py     # Unified analyzer
 │   └── structurer.py         # Content organization + headings
 ├── utils/               # Utilities
-│   ├── text_polisher.py      # Text polishing with checkpoint
-│   ├── heading_adder.py      # Section heading generation
+│   ├── llm_client.py          # Generic OpenAI-compatible LLM client
+│   ├── text_polisher.py       # Text polishing with checkpoint
+│   ├── heading_adder.py       # Section heading generation
 │   └── translator.py
 ├── generators/          # Document generation
 │   ├── docx_generator.py
@@ -103,21 +112,51 @@ video_note_system/
 
 ## API Requirements
 
-### GLM-4.6V
+### Vision APIs (Image Analysis)
+
+#### GLM-4.6V
 - Get API key: https://open.bigmodel.cn/
 - Models: `glm-4.6v` (flagship), `glm-4.6v-flashx` (lightweight)
 - Best for: Formulas, code, STEM content
 
-### Doubao Vision
+#### Doubao Vision
 - Get API key: https://www.volcengine.com/
 - Model: `doubao-vision-pro-32k`
 - Best for: Chinese text, PPT, documents
 
-### DeepSeek
+### Text LLM APIs (Text Processing)
+
+#### ModelScope (Default) ⭐
+- Get API token: https://modelscope.cn/my/myaccesstoken
+- Model: `deepseek-ai/DeepSeek-V3.2`
+- Best for: Text polishing, summaries, translations, section headings
+- Features:
+  - 128K context window
+  - Thinking/reasoning chain output (visible in debug logs)
+  - 8K max output tokens
+  - Cost-effective via ModelScope platform
+
+#### DeepSeek (Fallback)
 - Get API key: https://platform.deepseek.com/
 - Model: `deepseek-chat` (128K context, 8K output)
 - Best for: Text polishing, summaries, section headings
 - Pricing: ¥0.27/1M tokens input, ¥1.1/1M tokens output
+
+### Text LLM Provider Selection
+
+The system supports multiple text LLM providers with automatic fallback:
+
+```bash
+# Use ModelScope (default, DeepSeek-V3.2)
+TEXT_LLM_PROVIDER=modelscope
+
+# Use DeepSeek official API (fallback)
+TEXT_LLM_PROVIDER=deepseek
+```
+
+**Recommendation**: Use ModelScope as the default provider for better cost-effectiveness and thinking feature support.
+
+**Thinking Output**: When using DeepSeek-V3.2 via ModelScope, the reasoning chain (thinking process) is printed in debug logs for better understanding of the model's decision-making process.
 
 ## CLI Options
 
@@ -365,8 +404,12 @@ All work saved ✅
 | Charts | GLM-4.6V | 128k context, detailed analysis |
 | Chinese Text | Doubao | Superior Chinese understanding |
 | PPT/Slides | Doubao | Better layout recognition |
-| Text Polishing | DeepSeek | Fast, accurate, cost-effective |
-| General | GLM 70% / Doubao 30% | Load balancing |
+| Text Polishing | ModelScope (DeepSeek-V3.2) | Fast, accurate, thinking chain output |
+| Summaries | ModelScope (DeepSeek-V3.2) | 128K context, cost-effective |
+| Translations | ModelScope (DeepSeek-V3.2) | Multi-language support |
+| Headings | ModelScope (DeepSeek-V3.2) | Smart section generation |
+| General Vision | GLM 70% / Doubao 30% | Load balancing |
+| General Text | ModelScope (DeepSeek-V3.2) | Default text LLM provider |
 
 ## Performance Comparison
 

@@ -165,7 +165,7 @@ class DoubaoClient:
             # Encode image
             image_base64 = self._encode_image(image_path)
 
-            # Prepare request using OpenAI format
+            # Prepare request using standard OpenAI-compatible format
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[{

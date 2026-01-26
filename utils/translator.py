@@ -1,10 +1,9 @@
 """
 Translator using DeepSeek API for bilingual output
 """
-import os
 from typing import List, Dict, Any, Optional
-from openai import OpenAI
 
+from utils.llm_client import LLMClient
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -23,26 +22,34 @@ SUPPORTED_LANGUAGES = {
 
 
 class Translator:
-    """Translate text using DeepSeek LLM"""
+    """Translate text using text LLM"""
 
     def __init__(self):
-        """Initialize translator with DeepSeek API"""
-        from config.settings import DEEPSEEK_CONFIG
+        """Initialize translator with text LLM API"""
+        from config.settings import TEXT_LLM_PROVIDER, TEXT_LLM_CONFIGS
 
-        self.api_key = DEEPSEEK_CONFIG.get("api_key") or os.getenv("DEEPSEEK_API_KEY", "")
-        self.model = DEEPSEEK_CONFIG.get("model", "deepseek-chat")
-        self.base_url = DEEPSEEK_CONFIG.get("base_url", "https://api.deepseek.com")
+        provider = TEXT_LLM_PROVIDER
+        config = TEXT_LLM_CONFIGS.get(provider, TEXT_LLM_CONFIGS.get("modelscope", {}))
+
+        self.provider = provider
+        self.api_key = config.get("api_key") or ""
+        self.model = config.get("model")
+        self.base_url = config.get("base_url")
+        self.extra_body = config.get("extra_body")
+        self.max_tokens = config.get("max_tokens", 8192)
 
         if not self.api_key:
-            logger.warning("DeepSeek API key not found. Translation will be skipped.")
+            logger.warning("Text LLM API key not found. Translation will be skipped.")
             self.client = None
         else:
-            # Initialize client following DeepSeek official example (no timeout parameter)
-            self.client = OpenAI(
+            self.client = LLMClient(
                 api_key=self.api_key,
-                base_url=self.base_url
+                base_url=self.base_url,
+                model=self.model,
+                default_max_tokens=self.max_tokens,
+                extra_body=self.extra_body
             )
-            logger.info("Translator initialized with DeepSeek API")
+            logger.info(f"Translator initialized: provider={self.provider}, model={self.model}")
 
     def is_available(self) -> bool:
         """Check if translator is available"""
@@ -92,25 +99,26 @@ Text to translate:
 Translation:"""
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": f"You are a professional translator. Translate text accurately to {target_name}. Output only the translation, nothing else."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                max_tokens=len(text) * 3,  # Allow for expansion
+            messages = [
+                {
+                    "role": "system",
+                    "content": f"You are a professional translator. Translate text accurately to {target_name}. Output only the translation, nothing else."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+
+            translated = self.client.chat_completion(
+                messages=messages,
+                max_tokens=len(text) * 3,
                 temperature=0.1,
+                retry_count=2
             )
-            
-            translated = response.choices[0].message.content
+
             return translated.strip() if translated else ""
-            
+
         except Exception as e:
             logger.error(f"Translation failed: {e}")
             return ""
@@ -178,36 +186,37 @@ Items to translate:
 Translations:"""
 
             try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": f"You are a professional translator. Translate each numbered item to {target_name}. Keep the [number] format."
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ],
+                messages = [
+                    {
+                        "role": "system",
+                        "content": f"You are a professional translator. Translate each numbered item to {target_name}. Keep the [number] format."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+
+                response_text = self.client.chat_completion(
+                    messages=messages,
                     max_tokens=sum(len(t) * 3 for t in non_empty_texts),
                     temperature=0.1,
+                    retry_count=2
                 )
-                
-                response_content = response.choices[0].message.content
-                response_text = response_content.strip() if response_content else ""
-                
+
+                response_text = response_text.strip() if response_text else ""
+
                 # Parse response - extract translations by number
                 translations = self._parse_batch_response(response_text, len(non_empty_texts))
-                
+
                 # Reconstruct full batch with empty strings for skipped items
                 batch_results = [""] * len(batch)
                 for j, idx in enumerate(non_empty_indices):
                     if j < len(translations):
                         batch_results[idx] = translations[j]
-                
+
                 results.extend(batch_results)
-                
+
             except Exception as e:
                 logger.error(f"Batch translation failed: {e}")
                 results.extend([""] * len(batch))
