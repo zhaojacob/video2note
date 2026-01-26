@@ -61,10 +61,35 @@ DEEPSEEK_CONFIG = {
     "base_url": "https://api.deepseek.com",
     "max_tokens": 8192,  # Maximum output tokens (8K)
     "thinking": False,  # Thinking mode disabled (not needed for polish/summary)
+
+    # 并发/检查点配置
+    "enable_concurrent": True,  # Enable concurrent processing
+    "max_concurrent": 3,  # Maximum concurrent requests
+    "enable_checkpoint": True,  # Enable checkpoint/resume functionality
+    "checkpoint_dir": OUTPUT_DIR / "polish_checkpoints",  # Checkpoint directory
+    "max_chunk_retries": 3,  # Maximum retries per chunk
+    "retry_delay": 5,  # Base retry delay in seconds
 }
 
 # Frame extraction configuration
 FRAME_CONFIG = {
+    "default_strategy": "uniform",  # uniform/paragraph/fixed_interval
+    "max_frames": 5,  # Total frames to extract (including opening frame)
+    "strategies": {
+        "uniform": {
+            "name": "均匀分布",
+            "description": "开头帧 + 4个均匀分布帧（时间轴均匀分布）"
+        },
+        "paragraph": {
+            "name": "段落边界",
+            "description": "开头帧 + 4个段落边界帧（根据文字段落/章节切换）"
+        },
+        "fixed_interval": {
+            "name": "固定间隔",
+            "description": "开头帧 + 每10秒一帧",
+            "interval_sec": 10.0
+        }
+    },
     "interval_sec": 10.0,  # Extract frame every N seconds
     "scene_threshold": 30.0,  # Scene detection threshold
     "similarity_threshold": 0.95,  # For deduplication

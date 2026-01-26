@@ -351,10 +351,321 @@ class FrameExtractor:
 
         return frames
 
+    def extract_frames_with_strategy(
+        self,
+        video_path: str | Path,
+        strategy: str = "uniform",
+        transcript: List[Dict[str, Any]] = None,
+        max_frames: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Extract frames using specified strategy
+
+        Args:
+            video_path: Path to video file
+            strategy: Extraction strategy (uniform/paragraph/fixed_interval)
+            transcript: Transcript segments (required for paragraph strategy)
+            max_frames: Maximum number of frames to extract (default: 5)
+
+        Returns:
+            List of frame dictionaries
+        """
+        from config.settings import FRAME_CONFIG
+
+        strategy = strategy or FRAME_CONFIG.get("default_strategy", "uniform")
+        max_frames = max_frames or FRAME_CONFIG.get("max_frames", 5)
+
+        logger.info(f"Extracting frames using strategy: {strategy} (max {max_frames} frames)")
+
+        if strategy == "uniform":
+            return self._extract_uniform_frames(video_path, max_frames)
+        elif strategy == "paragraph":
+            return self._extract_paragraph_boundary_frames(video_path, transcript, max_frames)
+        elif strategy == "fixed_interval":
+            interval_sec = FRAME_CONFIG.get("strategies", {}).get(
+                "fixed_interval", {}
+            ).get("interval_sec", 10.0)
+            return self._extract_fixed_interval_frames(video_path, interval_sec, max_frames)
+        else:
+            logger.warning(f"Unknown strategy: {strategy}, using uniform")
+            return self._extract_uniform_frames(video_path, max_frames)
+
+    def _extract_uniform_frames(
+        self,
+        video_path: str | Path,
+        max_frames: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        策略A: 开头帧 + 均匀分布的4帧（时间轴均匀分布）
+
+        Args:
+            video_path: Path to video file
+            max_frames: Maximum number of frames to extract
+
+        Returns:
+            List of frame dictionaries
+        """
+        video_path = Path(video_path)
+
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            raise ValueError(f"Cannot open video: {video_path}")
+
+        try:
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            duration = total_frames / fps if fps > 0 else 0
+
+            logger.info(f"Strategy A (uniform): {duration:.1f}s video, extracting {max_frames} frames")
+
+            frames = []
+
+            # 1. 提取开头帧
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ret, frame = cap.read()
+            if ret:
+                frame_filename = f"frame_opening_{0:06d}.jpg"
+                frame_path = self.output_dir / frame_filename
+                cv2.imwrite(str(frame_path), frame)
+
+                frames.append({
+                    "path": str(frame_path),
+                    "timestamp": 0.0,
+                    "frame_number": 0,
+                    "type": "opening",
+                    "strategy": "uniform"
+                })
+
+            # 2. 均匀分布剩余帧
+            if max_frames > 1:
+                num_remaining = max_frames - 1
+                interval = duration / (num_remaining + 1)
+
+                for i in range(1, num_remaining + 1):
+                    timestamp = i * interval
+                    if timestamp >= duration:
+                        timestamp = duration - 0.1
+
+                    frame_number = int(timestamp * fps)
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+                    ret, frame = cap.read()
+
+                    if ret:
+                        frame_filename = f"frame_uniform_{i:06d}.jpg"
+                        frame_path = self.output_dir / frame_filename
+                        cv2.imwrite(str(frame_path), frame)
+
+                        frames.append({
+                            "path": str(frame_path),
+                            "timestamp": timestamp,
+                            "frame_number": frame_number,
+                            "type": "uniform",
+                            "strategy": "uniform"
+                        })
+
+            logger.info(f"Extracted {len(frames)} frames (uniform strategy)")
+            return frames
+
+        finally:
+            cap.release()
+
+    def _extract_paragraph_boundary_frames(
+        self,
+        video_path: str | Path,
+        transcript: List[Dict[str, Any]],
+        max_frames: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        策略B: 开头帧 + 段落边界的4帧（根据文字段落/章节切换）
+
+        Args:
+            video_path: Path to video file
+            transcript: Transcript segments
+            max_frames: Maximum number of frames to extract
+
+        Returns:
+            List of frame dictionaries
+        """
+        if not transcript:
+            logger.warning("No transcript provided for paragraph strategy, falling back to uniform")
+            return self._extract_uniform_frames(video_path, max_frames)
+
+        video_path = Path(video_path)
+
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            raise ValueError(f"Cannot open video: {video_path}")
+
+        try:
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            duration = total_frames / fps if fps > 0 else 0
+
+            logger.info(f"Strategy B (paragraph): {len(transcript)} segments, extracting {max_frames} frames")
+
+            frames = []
+
+            # 1. 提取开头帧
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ret, frame = cap.read()
+            if ret:
+                frame_filename = f"frame_opening_{0:06d}.jpg"
+                frame_path = self.output_dir / frame_filename
+                cv2.imwrite(str(frame_path), frame)
+
+                frames.append({
+                    "path": str(frame_path),
+                    "timestamp": 0.0,
+                    "frame_number": 0,
+                    "type": "opening",
+                    "strategy": "paragraph"
+                })
+
+            # 2. 检测段落边界（静音间隔 > 3秒）
+            boundary_timestamps = []
+            gap_threshold = 3.0
+
+            for i in range(len(transcript) - 1):
+                current_end = transcript[i].get("end", 0)
+                next_start = transcript[i + 1].get("start", 0)
+                gap = next_start - current_end
+
+                if gap >= gap_threshold:
+                    boundary_time = (current_end + next_start) / 2
+                    boundary_timestamps.append(boundary_time)
+
+            logger.info(f"Detected {len(boundary_timestamps)} paragraph boundaries (gap >= {gap_threshold}s)")
+
+            # 3. 选择边界帧
+            num_needed = max_frames - 1
+            if len(boundary_timestamps) >= num_needed:
+                selected_boundaries = boundary_timestamps[:num_needed]
+            else:
+                selected_boundaries = boundary_timestamps.copy()
+                remaining = num_needed - len(boundary_timestamps)
+
+                if remaining > 0 and duration > 0:
+                    for i in range(remaining):
+                        candidate = (i + 1) * (duration / (remaining + 1))
+                        selected_boundaries.append(candidate)
+
+            selected_boundaries.sort()
+
+            # 4. 提取边界帧
+            for i, timestamp in enumerate(selected_boundaries[:num_needed]):
+                frame_number = int(timestamp * fps)
+
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+                ret, frame = cap.read()
+
+                if ret:
+                    frame_filename = f"frame_boundary_{i:06d}.jpg"
+                    frame_path = self.output_dir / frame_filename
+                    cv2.imwrite(str(frame_path), frame)
+
+                    frames.append({
+                        "path": str(frame_path),
+                        "timestamp": timestamp,
+                        "frame_number": frame_number,
+                        "type": "boundary",
+                        "strategy": "paragraph"
+                    })
+
+            frames.sort(key=lambda x: x["timestamp"])
+            logger.info(f"Extracted {len(frames)} frames (paragraph strategy)")
+            return frames
+
+        finally:
+            cap.release()
+
+    def _extract_fixed_interval_frames(
+        self,
+        video_path: str | Path,
+        interval_sec: float = 10.0,
+        max_frames: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        策略C: 开头帧 + 固定间隔的4帧（每隔N秒）
+
+        Args:
+            video_path: Path to video file
+            interval_sec: Interval in seconds
+            max_frames: Maximum number of frames to extract
+
+        Returns:
+            List of frame dictionaries
+        """
+        video_path = Path(video_path)
+
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            raise ValueError(f"Cannot open video: {video_path}")
+
+        try:
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            duration = total_frames / fps if fps > 0 else 0
+
+            logger.info(f"Strategy C (fixed_interval): interval={interval_sec}s, max={max_frames}")
+
+            frames = []
+
+            # 1. 提取开头帧
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ret, frame = cap.read()
+            if ret:
+                frame_filename = f"frame_opening_{0:06d}.jpg"
+                frame_path = self.output_dir / frame_filename
+                cv2.imwrite(str(frame_path), frame)
+
+                frames.append({
+                    "path": str(frame_path),
+                    "timestamp": 0.0,
+                    "frame_number": 0,
+                    "type": "opening",
+                    "strategy": "fixed_interval"
+                })
+
+            # 2. 按固定间隔提取帧
+            num_remaining = max_frames - 1
+
+            for i in range(1, num_remaining + 1):
+                timestamp = i * interval_sec
+
+                if timestamp >= duration:
+                    logger.info(f"Reached end of video at frame {i}/{num_remaining}")
+                    break
+
+                frame_number = int(timestamp * fps)
+
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+                ret, frame = cap.read()
+
+                if ret:
+                    frame_filename = f"frame_interval_{i:06d}.jpg"
+                    frame_path = self.output_dir / frame_filename
+                    cv2.imwrite(str(frame_path), frame)
+
+                    frames.append({
+                        "path": str(frame_path),
+                        "timestamp": timestamp,
+                        "frame_number": frame_number,
+                        "type": "interval",
+                        "strategy": "fixed_interval",
+                        "interval": interval_sec
+                    })
+
+            logger.info(f"Extracted {len(frames)} frames (fixed_interval strategy)")
+            return frames
+
+        finally:
+            cap.release()
+
 
 def extract_frames(
     video_path: str | Path,
-    strategy: str = "interval",
+    strategy: str = "uniform",
+    transcript: List[Dict[str, Any]] = None,
     **kwargs
 ) -> List[Dict[str, Any]]:
     """
@@ -362,7 +673,8 @@ def extract_frames(
 
     Args:
         video_path: Path to video file
-        strategy: Extraction strategy (interval/transcript/keyframes)
+        strategy: Extraction strategy (uniform/paragraph/fixed_interval/transcript/interval/keyframes)
+        transcript: Transcript segments (required for paragraph strategy)
         **kwargs: Additional arguments
 
     Returns:
@@ -370,10 +682,16 @@ def extract_frames(
     """
     extractor = FrameExtractor()
 
-    if strategy == "interval":
+    # Use new strategy-based extraction
+    if strategy in ["uniform", "paragraph", "fixed_interval"]:
+        return extractor.extract_frames_with_strategy(
+            video_path, strategy, transcript, **kwargs
+        )
+    # Legacy strategies
+    elif strategy == "interval":
         return extractor.extract_frames_by_interval(video_path, **kwargs)
     elif strategy == "transcript":
-        return extractor.extract_frames_by_transcript(video_path, **kwargs)
+        return extractor.extract_frames_by_transcript(video_path, transcript, **kwargs)
     elif strategy == "keyframes":
         return extractor.extract_key_frames(video_path, **kwargs)
     else:

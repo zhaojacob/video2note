@@ -290,7 +290,7 @@ class MarkdownGenerator:
         if '## ' in text:
             from utils.text_polisher import TextPolisher
             polisher = TextPolisher()
-            chapters = polisher._parse_chapters(text)
+            chapters = polisher.extract_chapters(text)
             if chapters:
                 return self._render_chapters_with_images(chapters, images, relative_images)
         

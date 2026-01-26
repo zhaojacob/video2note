@@ -331,7 +331,7 @@ class DocxGenerator:
         if '## ' in text:
             from utils.text_polisher import TextPolisher
             polisher = TextPolisher()
-            chapters = polisher._parse_chapters(text)
+            chapters = polisher.extract_chapters(text)
             if chapters:
                 self._render_chapters_with_images(doc, chapters, images)
                 return
@@ -367,20 +367,24 @@ class DocxGenerator:
         """Render full transcript with embedded images and translations"""
         for item in items:
             if item["type"] == "text":
-                timestamp = self._format_timestamp(item["timestamp"])
+                # 优先使用预格式化的时间戳
+                timestamp = item.get("timestamp_formatted", "")
+                if not timestamp:
+                    timestamp = f"[{self._format_timestamp(item['timestamp'])}]"
+
                 content = item.get("content", "").strip()
                 content_translated = item.get("content_translated", "").strip()
-                
+
                 if content:
                     p = doc.add_paragraph()
                     # Timestamp in bold
-                    ts_run = p.add_run(f"[{timestamp}] ")
+                    ts_run = p.add_run(f"{timestamp} ")
                     self._set_run_font(ts_run, bold=True)
                     # Content
                     content_run = p.add_run(content)
                     self._set_run_font(content_run)
                     p.paragraph_format.line_spacing = 1.5
-                    
+
                     # Add translation if available
                     if content_translated:
                         p2 = doc.add_paragraph()
@@ -389,7 +393,7 @@ class DocxGenerator:
                         trans_run = p2.add_run(content_translated)
                         self._set_run_font(trans_run, color=COLOR_GRAY, italic=True)
                         p2.paragraph_format.line_spacing = 1.5
-                    
+
             elif item["type"] == "image":
                 self._add_transcript_image(doc, item)
 

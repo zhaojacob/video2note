@@ -241,6 +241,56 @@ class TextPolisher:
 
         return str(error_body)
 
+    def _get_checkpoint_path(self, video_title: str):
+        """Generate checkpoint file path from video title"""
+        from utils.file_handler import sanitize_filename
+        from pathlib import Path
+        from config.settings import DEEPSEEK_CONFIG, OUTPUT_DIR
+
+        safe_title = sanitize_filename(video_title or "untitled")
+        checkpoint_dir = Path(DEEPSEEK_CONFIG.get("checkpoint_dir", OUTPUT_DIR["transcripts"]))
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        return checkpoint_dir / f"{safe_title}_polish_checkpoint.json"
+
+    def _save_checkpoint(self, checkpoint_data: dict, video_title: str):
+        """Atomically save checkpoint to disk"""
+        import json
+        from datetime import datetime
+        from pathlib import Path
+
+        checkpoint_path = self._get_checkpoint_path(video_title)
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Use temporary file for atomic write
+        temp_path = checkpoint_path.with_suffix('.tmp')
+
+        checkpoint_data["metadata"]["last_updated"] = datetime.now().isoformat()
+
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(checkpoint_data, f, ensure_ascii=False, indent=2)
+
+        # Atomic rename
+        temp_path.replace(checkpoint_path)
+
+        logger.info(f"Checkpoint saved: {checkpoint_path.name}")
+
+    def _load_checkpoint(self, video_title: str) -> dict:
+        """Load checkpoint file if exists"""
+        import json
+        from pathlib import Path
+
+        checkpoint_path = self._get_checkpoint_path(video_title)
+        if not checkpoint_path.exists():
+            return None
+
+        try:
+            with open(checkpoint_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to load checkpoint: {e}")
+            return None
+
     def polish(self, raw_transcript: str, video_title: str = "", 
                duration_minutes: float = 0) -> Optional[str]:
         """
@@ -269,14 +319,29 @@ class TextPolisher:
         text_length = len(raw_transcript)
         logger.info(f"Polishing transcript: {text_length} chars, {duration_minutes:.1f} minutes")
         print(f"  → Text length: {text_length} chars")
-        
-        # Use simple single-turn for texts under 25000 chars (~100 min video usually ~35000)
+
+        # Check if checkpoint exists (if enabled)
+        from config.settings import DEEPSEEK_CONFIG
+        if DEEPSEEK_CONFIG.get("enable_checkpoint", False):
+            checkpoint = self._load_checkpoint(video_title)
+            if checkpoint:
+                print(f"\n[RESUME] Found checkpoint for: {video_title}")
+                print(f"[RESUME] Total chunks: {checkpoint['metadata'].get('total_chunks', '?')}")
+                # For now, just notify user. Full resume logic can be implemented later
+                print("[RESUME] Checkpoint found. For now, processing will start fresh.")
+
+        # Use simple single-turn for texts under 4500 chars
         if text_length <= self.MAX_SINGLE_TURN:
             print(f"  → Using single-turn processing...")
             return self._polish_single_turn(raw_transcript, video_title)
-        
-        # Use multi-turn for very long texts
-        print(f"  → Text too long for single turn, using multi-turn processing...")
+
+        # Use concurrent/checkpoint processing for long texts (if enabled)
+        if DEEPSEEK_CONFIG.get("enable_concurrent", False):
+            print(f"  → Using concurrent processing with checkpoint...")
+            return self._polish_with_checkpoint(raw_transcript, video_title, duration_minutes)
+
+        # Fall back to multi-turn processing
+        print(f"  → Using multi-turn processing...")
         return self._polish_multi_turn(raw_transcript, video_title, duration_minutes)
 
     def _polish_single_turn(self, text: str, video_title: str = "") -> Optional[str]:
@@ -302,7 +367,7 @@ class TextPolisher:
 1. Add punctuation marks (periods, commas, question marks, exclamation marks, colons, etc.)
 2. Fix obvious speech recognition errors (homophones, typos)
 3. Remove consecutive filler words (like "um um um", "uh uh", "you know you know")
-4. Divide into chapters at topic transitions, using ## markers
+4. Divide into logical paragraphs using blank lines (\\n\\n)
 
 [FORBIDDEN OPERATIONS]
 - Do NOT delete any substantive content
@@ -310,17 +375,21 @@ class TextPolisher:
 - Do NOT add information not in the original
 - Do NOT rephrase in your own words
 - Do NOT summarize or condense
+- Do NOT add chapter markers or section headers
 
 [OUTPUT FORMAT]
-## Chapter Title (brief, based on content)
-Proofread original content...
+Proofread content divided into paragraphs with blank lines (\\n\\n) between paragraphs.
+Use blank lines to separate different topics or speakers.
+Do NOT use ## markers or any section headers."""
 
-## Next Chapter Title
-Proofread original content..."""
+        user_prompt = f"""{title_context}Please proofread the following speech transcript:
 
-        user_prompt = f"""{title_context}Please proofread the following speech transcript (only add punctuation and chapter divisions, preserve ALL original content):
+{text}
 
-{text}"""
+Requirements:
+- Only add punctuation and paragraph divisions (use \\n\\n for paragraph breaks)
+- Preserve ALL original content
+- Do NOT add chapter markers or section headers"""
 
         # Follow DeepSeek API format: system + user messages
         messages = [
@@ -368,7 +437,7 @@ Proofread original content..."""
             for i, c in enumerate(chunks):
                 print(f"     [DEBUG] Chunk {i+1}: {len(c)} chars", flush=True)
 
-            # Base system prompt with all strict requirements (unchanged from original)
+            # Base system prompt with all strict requirements
             base_system_prompt = """You are a professional transcript proofreader. Your task is to clean up speech-to-text transcripts.
 
 [STRICT REQUIREMENTS]
@@ -379,7 +448,7 @@ Proofread original content..."""
 1. Add punctuation marks (periods, commas, question marks, exclamation marks, colons, etc.)
 2. Fix obvious speech recognition errors (homophones, typos)
 3. Remove consecutive filler words (like "um um um", "uh uh", "you know you know")
-4. Divide into chapters at topic transitions, using ## markers
+4. Divide into logical paragraphs using blank lines (\\n\\n)
 
 [FORBIDDEN OPERATIONS]
 - Do NOT delete any substantive content
@@ -387,13 +456,12 @@ Proofread original content..."""
 - Do NOT add information not in the original
 - Do NOT rephrase in your own words
 - Do NOT summarize or condense
+- Do NOT add chapter markers or section headers
 
 [OUTPUT FORMAT]
-## Chapter Title (brief, based on content)
-Proofread original content...
-
-## Next Chapter Title
-Proofread original content..."""
+Proofread content divided into paragraphs with blank lines (\\n\\n) between paragraphs.
+Use blank lines to separate different topics or speakers.
+Do NOT use ## markers or any section headers."""
 
             polished_chunks = []
             previous_content = ""
@@ -407,13 +475,13 @@ Proofread original content..."""
                 try:
                     # Build messages following DeepSeek API format (system + user roles)
                     if i == 0:
-                        # First chunk: establish chapter structure
+                        # First chunk
                         user_content = f"""{self._get_title_context(video_title, duration_minutes)}
 Please proofread the following speech transcript (part 1 of {len(chunks)} parts):
 
 {chunk}
 
-Note: Start with chapter 1 and use ## markers for chapter divisions."""
+Note: Use paragraph breaks (\\n\\n) to separate different topics. Do NOT use ## markers."""
                     else:
                         # Subsequent chunks: provide context from previous chunk
                         previous_ending = self._get_last_section(previous_content)
@@ -426,7 +494,7 @@ Please continue proofreading this part:
 
 {chunk}
 
-Note: Maintain chapter continuity with ## markers. Continue from where the previous part ended."""
+Note: Use paragraph breaks (\\n\\n). Do NOT use ## markers."""
 
                     # Follow DeepSeek API format: system + user messages
                     messages = [
@@ -524,6 +592,160 @@ Note: Maintain chapter continuity with ## markers. Continue from where the previ
         if duration_minutes > 0:
             parts.append(f"Duration: {duration_minutes:.0f} minutes")
         return "\n".join(parts) + "\n" if parts else ""
+
+    def _build_chunk_messages(self, chunk_id: int, chunk: str, chunks: list, video_title: str, total_chunks: int) -> list:
+        """Build messages for chunk processing"""
+        base_system_prompt = """You are a professional transcript proofreader. Your task is to clean up speech-to-text transcripts.
+
+[STRICT REQUIREMENTS]
+- You can ONLY proofread and format. You must NOT rewrite, paraphrase, summarize, or condense the original text.
+- Every sentence from the original MUST be preserved. You are only making it more readable.
+
+[ALLOWED OPERATIONS]
+1. Add punctuation marks (periods, commas, question marks, exclamation marks, colons, etc.)
+2. Fix obvious speech recognition errors (homophones, typos)
+3. Remove consecutive filler words (like "um um um", "uh uh", "you know you know")
+4. Divide into logical paragraphs using blank lines (\\n\\n)
+
+[FORBIDDEN OPERATIONS]
+- Do NOT delete any substantive content
+- Do NOT change the speaker's original meaning
+- Do NOT add information not in the original
+- Do NOT rephrase in your own words
+- Do NOT summarize or condense
+- Do NOT add chapter markers or section headers
+
+[OUTPUT FORMAT]
+Proofread content divided into paragraphs with blank lines (\\n\\n) between paragraphs.
+Use blank lines to separate different topics or speakers.
+Do NOT use ## markers or any section headers."""
+
+        title_context = self._get_title_context(video_title, 0)
+
+        if chunk_id == 0:
+            user_content = f"""{title_context}Please proofread the following speech transcript (part 1 of {total_chunks} parts):
+
+{chunk}
+
+Note: Use paragraph breaks (\\n\\n) to separate different topics. Do NOT use ## markers."""
+        else:
+            user_content = f"""This is part {chunk_id+1} of {total_chunks} parts of the transcript.
+
+Please continue proofreading this part:
+
+{chunk}
+
+Note: Use paragraph breaks (\\n\\n). Do NOT use ## markers."""
+
+        return [
+            {"role": "system", "content": base_system_prompt},
+            {"role": "user", "content": user_content}
+        ]
+
+    def _process_single_chunk(self, chunk_id: int, chunk: str, messages: list, checkpoint_data: dict, video_title: str) -> str:
+        """Process single chunk with retry and checkpoint saving"""
+        from config.settings import DEEPSEEK_CONFIG
+        max_retries = DEEPSEEK_CONFIG.get("max_chunk_retries", 3)
+
+        for attempt in range(max_retries):
+            try:
+                print(f"[PROCESSING] Chunk {chunk_id+1} (attempt {attempt+1}/{max_retries})", end="", flush=True)
+
+                polished = self._call_deepseek(messages, max_tokens=self.max_tokens)
+
+                if polished:
+                    # Update checkpoint
+                    checkpoint_data["chunks"][chunk_id] = {
+                        "chunk_id": chunk_id,
+                        "status": "completed",
+                        "polished_text": polished
+                    }
+                    self._save_checkpoint(checkpoint_data, video_title)
+
+                    print(f" Done! ({len(polished)} chars)")
+                    return polished
+
+            except Exception as e:
+                print(f" Failed!")
+                logger.warning(f"Chunk {chunk_id+1} attempt {attempt+1} failed: {e}")
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(DEEPSEEK_CONFIG.get("retry_delay", 5))
+
+        raise Exception(f"Failed to process chunk {chunk_id} after {max_retries} attempts")
+
+    def _polish_with_checkpoint(self, text: str, video_title: str, duration_minutes: float) -> Optional[str]:
+        """Polish with checkpoint and concurrent processing"""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from datetime import datetime
+        from config.settings import DEEPSEEK_CONFIG
+
+        chunks = self._split_into_chunks(text)
+        total_chunks = len(chunks)
+
+        print(f"\n[CHECKPOINT] Starting polish with {total_chunks} chunks")
+
+        # Initialize checkpoint
+        checkpoint_data = {
+            "metadata": {
+                "video_title": video_title,
+                "total_chunks": total_chunks,
+                "timestamp": datetime.now().isoformat(),
+                "model": self.model,
+                "max_tokens": self.max_tokens
+            },
+            "chunks": [
+                {
+                    "chunk_id": i,
+                    "status": "pending",
+                    "polished_text": None
+                }
+                for i in range(total_chunks)
+            ],
+            "errors": []
+        }
+
+        self._save_checkpoint(checkpoint_data, video_title)
+
+        # Process chunks concurrently
+        polished_chunks = [None] * total_chunks
+        max_workers = DEEPSEEK_CONFIG.get("max_concurrent", 3)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {}
+
+            for chunk_id, chunk in enumerate(chunks):
+                messages = self._build_chunk_messages(chunk_id, chunk, chunks, video_title, total_chunks)
+                future = executor.submit(
+                    self._process_single_chunk,
+                    chunk_id, chunk, messages, checkpoint_data, video_title
+                )
+                futures[future] = chunk_id
+
+            for future in as_completed(futures):
+                chunk_id = futures[future]
+                try:
+                    result = future.result()
+                    polished_chunks[chunk_id] = result
+                    print(f"[DONE] Chunk {chunk_id+1}/{total_chunks} completed")
+                except Exception as e:
+                    logger.error(f"Chunk {chunk_id} failed: {e}")
+                    checkpoint_data["errors"].append({
+                        "chunk_id": chunk_id,
+                        "error": str(e),
+                        "timestamp": datetime.now().isoformat()
+                    })
+
+        # Merge results
+        result = "\n\n".join([c for c in polished_chunks if c])
+
+        # Clean up checkpoint on success
+        checkpoint_path = self._get_checkpoint_path(video_title)
+        if checkpoint_path.exists():
+            checkpoint_path.unlink()
+            print(f"[CLEANUP] Removed checkpoint file")
+
+        return result
 
     def _split_into_chunks(self, text: str) -> List[str]:
         """

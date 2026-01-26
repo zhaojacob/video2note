@@ -108,6 +108,13 @@ class Transcriber:
             logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
             logger.info(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
 
+    def _format_timestamp(self, seconds: float) -> str:
+        """Format timestamp as HH:MM:SS"""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
     def transcribe(
         self,
         audio_path: str | Path,
@@ -155,9 +162,14 @@ class Transcriber:
             # Convert to list of dictionaries
             results = []
             for segment in segments:
+                start_formatted = self._format_timestamp(segment.start)
+                end_formatted = self._format_timestamp(segment.end)
+
                 results.append({
                     "start": segment.start,
                     "end": segment.end,
+                    "timestamp_formatted": f"[{start_formatted}]",
+                    "time_range": f"[{start_formatted} - {end_formatted}]",
                     "text": segment.text.strip(),
                     "confidence": segment.avg_logprob if hasattr(segment, 'avg_logprob') else 0.0,
                     "no_speech_prob": segment.no_speech_prob if hasattr(segment, 'no_speech_prob') else 0.0,

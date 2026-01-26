@@ -152,6 +152,42 @@ class Structurer:
                 print(f"[AI Summary] Failed: {e}")
                 summary = ""
 
+        # Step 3: Add headings to polished text (NEW!)
+        if polished_text:
+            logger.info("Adding section headings...")
+            print("\n[Headings] Adding section headings...")
+            try:
+                from utils.heading_adder import HeadingAdder
+                heading_adder = HeadingAdder()
+                if heading_adder.is_available():
+                    # 根据视频长度调整max_headings
+                    if duration_minutes > 60:
+                        max_headings = 20
+                    elif duration_minutes > 30:
+                        max_headings = 15
+                    else:
+                        max_headings = 10
+
+                    text_with_headings = heading_adder.add_headings(
+                        polished_text,
+                        video_info.get("title", ""),
+                        max_headings=max_headings
+                    )
+
+                    if text_with_headings and text_with_headings != polished_text:
+                        polished_text = text_with_headings
+                        # 提取chapters
+                        polisher = self._get_text_polisher()
+                        chapters = polisher.extract_chapters(polished_text)
+                        print(f"[Headings] Added {len(chapters)} headings")
+                    else:
+                        print("[Headings] Skipped or failed")
+                else:
+                    print("[Headings] Skipped (no DeepSeek API key)")
+            except Exception as e:
+                logger.error(f"Failed to add headings: {e}")
+                print(f"[Headings] Failed: {e}")
+
         # Translation handling
         title_translated = ""
         summary_translated = ""
@@ -276,6 +312,7 @@ class Structurer:
             content_items.append({
                 "type": "text",
                 "timestamp": seg.get("start", 0),
+                "timestamp_formatted": seg.get("timestamp_formatted", ""),
                 "end_time": seg.get("end", 0),
                 "content": seg.get("text", "").strip(),
                 "content_translated": seg.get("text_translated", "").strip() if seg.get("text_translated") else ""
