@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from pipeline.pipeline_orchestrator import PipelineOrchestrator
+from pipeline.batch_processor import BatchProcessor
 from config.api_config import validate_api_keys, create_env_template
 from utils.logger import get_logger, setup_logger
 
@@ -21,6 +22,12 @@ def parse_args():
 Examples:
   # Generate all formats from YouTube
   python main.py "https://www.youtube.com/watch?v=xxx"
+
+  # Batch process multiple videos
+  python main.py "https://www.youtube.com/watch?v=xxx1" "https://www.youtube.com/watch?v=xxx2"
+
+  # Batch process from file
+  python main.py --batch-file videos.txt
 
   # Generate only Word document
   python main.py "https://www.youtube.com/watch?v=xxx" --formats docx
@@ -42,14 +49,25 @@ Examples:
 
   # Translate to Chinese
   python main.py "https://www.youtube.com/watch?v=xxx" --translate zh
+
+Batch file format (videos.txt):
+  https://www.youtube.com/watch?v=xxx1
+  https://www.youtube.com/watch?v=xxx2
+  # This is a comment, will be ignored
+  https://bilibili.com/video/BV1xx411c7mD
         """
     )
 
     # Positional arguments (optional when using --setup or --check-gpu)
     parser.add_argument(
-        "video_url",
-        nargs="?",
-        help="Video URL (YouTube/Bilibili) or dummy URL when using --local-video"
+        "urls",
+        nargs="*",
+        help="Video URL(s) (YouTube/Bilibili) - supports multiple URLs for batch processing"
+    )
+
+    parser.add_argument(
+        "--batch-file",
+        help="Read video URLs from file (one URL per line, # for comments)"
     )
 
     # Output options
@@ -160,6 +178,37 @@ Examples:
     return parser.parse_args()
 
 
+def load_urls_from_file(file_path: str) -> list:
+    """
+    Load URL list from file
+
+    File format:
+    - One URL per line
+    - Empty lines are ignored
+    - Lines starting with # are treated as comments
+    """
+    from pathlib import Path
+
+    urls = []
+    file_path = Path(file_path)
+
+    if not file_path.exists():
+        raise FileNotFoundError(f"Batch file not found: {file_path}")
+
+    with open(file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+
+            # Skip empty lines and comments
+            if not line or line.startswith("#"):
+                continue
+
+            urls.append(line)
+
+    logger.info(f"Loaded {len(urls)} URL(s) from file: {file_path}")
+    return urls
+
+
 def setup_command():
     """Handle setup command"""
     print("Setting up video note system...\n")
@@ -228,9 +277,21 @@ def main():
     if args.check_gpu:
         return check_gpu_command()
 
-    # Check if video_url is provided
-    if not args.video_url:
-        parser.error("video_url is required when not using --setup or --check-gpu")
+    # Collect all video URLs
+    video_urls = []
+
+    # Method 1: Command line arguments
+    if args.urls:
+        video_urls.extend(args.urls)
+
+    # Method 2: Batch file
+    if args.batch_file:
+        file_urls = load_urls_from_file(args.batch_file)
+        video_urls.extend(file_urls)
+
+    # Check if we have any URLs
+    if not video_urls:
+        parser.error("Please provide at least one video URL (as argument or via --batch-file)")
 
     # Validate API keys before running
     try:
@@ -249,46 +310,72 @@ def main():
 
     # Run pipeline
     try:
-        logger.info("Starting video note generation")
-        logger.info(f"URL: {args.video_url}")
-        logger.info(f"Formats: {', '.join(formats)}")
+        # Batch mode (multiple URLs)
+        if len(video_urls) > 1:
+            logger.info(f"Starting batch processing: {len(video_urls)} video(s)")
 
-        orchestrator = PipelineOrchestrator(
-            whisper_model_size=args.whisper_model,
-            whisper_device=args.whisper_device,
-            max_concurrent_api=args.max_concurrent
-        )
+            processor = BatchProcessor(
+                whisper_model_size=args.whisper_model,
+                whisper_device=args.whisper_device,
+                max_concurrent_api=args.max_concurrent
+            )
 
-        results = orchestrator.run(
-            video_url=args.video_url,
-            output_formats=formats,
-            local_video=args.local_video,
-            skip_transcription=args.skip_transcription,
-            skip_analysis=args.skip_analysis,
-            frame_strategy=args.frame_strategy,
-            frame_interval=args.frame_interval,
-            max_frames=args.max_frames,
-            translate_to=args.translate
-        )
+            result = processor.process_batch(
+                video_urls=video_urls,
+                output_formats=formats,
+                local_video=args.local_video,
+                skip_transcription=args.skip_transcription,
+                skip_analysis=args.skip_analysis,
+                frame_strategy=args.frame_strategy,
+                frame_interval=args.frame_interval,
+                max_frames=args.max_frames,
+                translate_to=args.translate
+            )
 
-        if results["success"]:
-            print("\n" + "=" * 60)
-            print("[OK] Generation complete!")
-            print("=" * 60)
+            return 0 if result["failed_count"] == 0 else 1
 
-            for fmt, path in results["outputs"].items():
-                print(f"  {fmt.upper()}: {path}")
-
-            return 0
+        # Single video mode (backward compatible)
         else:
-            print("\n" + "=" * 60)
-            print("[X] Generation completed with errors")
-            print("=" * 60)
+            logger.info("Starting video note generation")
+            logger.info(f"URL: {video_urls[0]}")
+            logger.info(f"Formats: {', '.join(formats)}")
 
-            for error in results["errors"]:
-                print(f"  • {error}")
+            orchestrator = PipelineOrchestrator(
+                whisper_model_size=args.whisper_model,
+                whisper_device=args.whisper_device,
+                max_concurrent_api=args.max_concurrent
+            )
 
-            return 1
+            results = orchestrator.run(
+                video_url=video_urls[0],
+                output_formats=formats,
+                local_video=args.local_video,
+                skip_transcription=args.skip_transcription,
+                skip_analysis=args.skip_analysis,
+                frame_strategy=args.frame_strategy,
+                frame_interval=args.frame_interval,
+                max_frames=args.max_frames,
+                translate_to=args.translate
+            )
+
+            if results["success"]:
+                print("\n" + "=" * 60)
+                print("[OK] Generation complete!")
+                print("=" * 60)
+
+                for fmt, path in results["outputs"].items():
+                    print(f"  {fmt.upper()}: {path}")
+
+                return 0
+            else:
+                print("\n" + "=" * 60)
+                print("[X] Generation completed with errors")
+                print("=" * 60)
+
+                for error in results["errors"]:
+                    print(f"  • {error}")
+
+                return 1
 
     except KeyboardInterrupt:
         logger.info("\nInterrupted by user")

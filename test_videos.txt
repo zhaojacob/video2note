@@ -1,0 +1,10 @@
+# Test batch file for video processing
+# Lines starting with # are comments and will be ignored
+
+# Example video URLs (replace with real URLs for testing)
+https://www.youtube.com/watch?v=example1
+
+# Empty lines are also ignored
+
+https://www.youtube.com/watch?v=example2
+https://bilibili.com/video/BV1xx411c7mD
