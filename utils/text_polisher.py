@@ -5,10 +5,9 @@ Supports incremental polishing for long transcripts
 import logging
 import re
 from typing import Optional, List, Dict, Any
-from openai import OpenAI
-from openai import APIError, RateLimitError, APITimeoutError, AuthenticationError, APIConnectionError
-
-from config.settings import DEEPSEEK_CONFIG
+from utils.llm_client import LLMClient
+from config.settings import TEXT_LLM_PROVIDER, TEXT_LLM_CONFIGS
+from config.prompt_templates import TRANSCRIPT_POLISH_SYSTEM_PROMPT, TRANSCRIPT_POLISH_USER_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -16,11 +15,11 @@ logger = logging.getLogger(__name__)
 class TextPolisher:
     """
     Text polisher using DeepSeek Chat model.
-
+    
     Strategy:
     - Short texts (<6000 chars): Single-turn processing
     - Long texts (>6000 chars): Multi-turn incremental polishing (polish each chunk independently, then merge)
-
+    
     Model: deepseek-chat (128K context, 8K max output)
     Chunk size: 6000 chars (~2000-3000 tokens input, safe for 8K output)
     """
@@ -33,36 +32,42 @@ class TextPolisher:
     # Max characters for single-turn processing
     MAX_SINGLE_TURN = 4500
     
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, default_temperature: float = 0.3):
         """
         Initialize TextPolisher with DeepSeek API
-
+        
         Args:
             api_key: DeepSeek API key (optional, uses config if not provided)
+            default_temperature: Default temperature for LLM generation
         """
-        self.api_key = api_key or DEEPSEEK_CONFIG.get("api_key")
-        self.base_url = DEEPSEEK_CONFIG.get("base_url", "https://api.deepseek.com")
-        self.model = DEEPSEEK_CONFIG.get("model", "deepseek-chat")
-        self.max_tokens = DEEPSEEK_CONFIG.get("max_tokens", 8192)
-        self.thinking_enabled = DEEPSEEK_CONFIG.get("thinking", False)
+        provider = TEXT_LLM_PROVIDER
+        config = TEXT_LLM_CONFIGS.get(provider, TEXT_LLM_CONFIGS.get("modelscope", {}))
 
+        self.provider = provider
+        self.api_key = api_key or config.get("api_key")
+        self.base_url = config.get("base_url")
+        self.model = config.get("model")
+        self.max_tokens = config.get("max_tokens", 8192)
+        self.extra_body = config.get("extra_body")
+        self.default_temperature = default_temperature
+        
         if not self.api_key:
-            logger.warning("DeepSeek API key not configured, TextPolisher will be disabled")
-            self.client = None
+            logger.warning("Text LLM API key not configured, TextPolisher will be disabled")
+            self.llm_client = None
         else:
-            # Initialize client following DeepSeek official example
-            # Set timeout to 300 seconds (5 minutes) to handle long text generation
-            self.client = OpenAI(
+            self.llm_client = LLMClient(
                 api_key=self.api_key,
                 base_url=self.base_url,
-                timeout=300.0,  # 5 minute timeout for long responses
-                max_retries=2    # Client-level retry for connection errors
+                model=self.model,
+                timeout=600.0,  # 10 minute timeout for long responses
+                max_retries=3,
+                default_max_tokens=self.max_tokens,
+                extra_body=self.extra_body
             )
-            logger.info(f"TextPolisher initialized: model={self.model}, max_tokens={self.max_tokens}, timeout=300s")
 
     def is_available(self) -> bool:
         """Check if polisher is available"""
-        return self.client is not None
+        return self.llm_client is not None and self.llm_client.is_available()
 
     def _call_deepseek(self, messages: List[Dict[str, str]],
                        max_tokens: Optional[int] = None,
@@ -94,6 +99,19 @@ class TextPolisher:
         # Log request details for debugging
         input_chars = sum(len(m.get("content", "")) for m in messages)
         logger.info(f"DeepSeek API request: model={self.model}, max_tokens={params['max_tokens']}, input_chars={input_chars}")
+        
+        # DEBUG: Print exact payload for user inspection
+        print(f"\n[DEBUG] DeepSeek Request Payload:")
+        print(f"  Model: {self.model}")
+        print(f"  Max Tokens: {params['max_tokens']}")
+        print(f"  Messages: {len(messages)} messages")
+        # Print the last user message (usually the content)
+        if messages:
+            last_msg = messages[-1]
+            content_preview = last_msg.get("content", "")[:500] + "..." if len(last_msg.get("content", "")) > 500 else last_msg.get("content", "")
+            print(f"  Last Message Preview: {content_preview}")
+            print(f"  Total Input Chars: {input_chars}")
+        print("-" * 60)
 
         for attempt in range(retry_count + 1):
             try:
@@ -139,7 +157,7 @@ class TextPolisher:
 
                 if attempt < retry_count:
                     import time
-                    wait_time = (attempt + 1) * 10  # 10s, 20s backoff for timeout
+                    wait_time = (attempt + 1) * 20  # 20s, 40s, 60s backoff for timeout
                     print(f"[INFO] Retrying in {wait_time}s...")
                     time.sleep(wait_time)
                 else:
@@ -151,10 +169,14 @@ class TextPolisher:
                 error_msg = str(e)
                 logger.warning(f"DeepSeek Connection Error (attempt {attempt + 1}): {error_msg}")
                 print(f"\n[WARNING] Connection dropped/failed: {error_msg}")
+                
+                # Print detailed connection error info if available
+                if hasattr(e, 'request'):
+                    print(f"[DEBUG] Request URL: {e.request.url}")
 
                 if attempt < retry_count:
                     import time
-                    wait_time = (attempt + 1) * 5  # 5s, 10s backoff
+                    wait_time = (attempt + 1) * 10  # 10s, 20s, 30s backoff
                     print(f"[INFO] Retrying in {wait_time}s...")
                     time.sleep(wait_time)
                 else:
@@ -179,6 +201,9 @@ class TextPolisher:
                     print(f"[ERROR] Message: {error_detail}")
                 else:
                     print(f"[ERROR] {error_msg}")
+                
+                # Print full error body for debugging
+                print(f"[DEBUG] Full Error Body: {error_body}")
 
                 # Don't retry on client errors (4xx), but retry on server errors (5xx)
                 if isinstance(status_code, int) and 400 <= status_code < 500:
@@ -216,16 +241,16 @@ class TextPolisher:
     def _extract_error_detail(self, error_body: Dict[str, Any]) -> str:
         """
         Extract detailed error message from error body
-
+        
         Args:
             error_body: Error response body
-
+            
         Returns:
             Formatted error message
         """
         if not error_body:
             return ""
-
+            
         # Try to get error message from different possible structures
         if isinstance(error_body, dict):
             # OpenAI error format
@@ -234,21 +259,22 @@ class TextPolisher:
                 if isinstance(error, dict):
                     return error.get('message', str(error))
                 return str(error)
-
+                
             # Direct message field
             if 'message' in error_body:
                 return error_body['message']
-
+                
         return str(error_body)
 
     def _get_checkpoint_path(self, video_title: str):
         """Generate checkpoint file path from video title"""
         from utils.file_handler import sanitize_filename
         from pathlib import Path
-        from config.settings import DEEPSEEK_CONFIG, OUTPUT_DIR
+        from config.settings import TEXT_LLM_CONFIGS, TEXT_LLM_PROVIDER, OUTPUT_DIR
 
+        config = TEXT_LLM_CONFIGS.get(TEXT_LLM_PROVIDER, {})
         safe_title = sanitize_filename(video_title or "untitled")
-        checkpoint_dir = Path(DEEPSEEK_CONFIG.get("checkpoint_dir", OUTPUT_DIR / "transcripts"))
+        checkpoint_dir = Path(config.get("checkpoint_dir", OUTPUT_DIR / "transcripts"))
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
         return checkpoint_dir / f"{safe_title}_polish_checkpoint.json"
@@ -295,7 +321,11 @@ class TextPolisher:
         self,
         segments: List[Dict[str, Any]],
         video_title: str = "",
-        max_chars: int = 10000
+        max_chars: int = 5000,
+        system_prompt: str = None,
+        user_prompt_template: str = None,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None
     ) -> Dict[str, Any]:
         """
         Polish transcript from JSON segments, returning structured data.
@@ -303,31 +333,41 @@ class TextPolisher:
         Args:
             segments: List of transcript segments [{"start": 0.0, "text": "..."}]
             video_title: Video title
-            max_chars: Target characters per chunk (approx. 5000 tokens)
+            max_chars: Target characters per chunk (approx. 2500 tokens)
+            system_prompt: Optional override for system prompt
+            user_prompt_template: Optional override for user prompt template
+            max_tokens: Optional override for max tokens
+            temperature: Optional override for temperature
             
         Returns:
             Structured data with sections, headers, and timestamped paragraphs
         """
-        if not self.client:
+        if not self.llm_client:
             logger.warning("TextPolisher not available")
             return {"sections": []}
             
         if not segments:
             return {"sections": []}
             
-        # Split segments into chunks based on character count
-        chunks = self._chunk_segments_by_chars(segments, max_chars)
-        logger.info(f"Split {len(segments)} segments into {len(chunks)} chunks (target {max_chars} chars)")
-        print(f"  → Split into {len(chunks)} chunks (target {max_chars} chars), polishing incrementally...")
+        # Step 1: Pre-process segments (merge small sequential segments)
+        # This reduces the number of items in the JSON list and removes unnecessary keys
+        # Use larger size (4500 chars) for better context, timestamps will be handled by fuzzy alignment later
+        merged_segments = self._merge_sequential_segments(segments, max_chars_per_item=4500)
+        logger.info(f"Merged {len(segments)} raw segments into {len(merged_segments)} chunks")
+        
+        # Step 2: Split merged segments into chunks for LLM processing
+        chunks = self._chunk_merged_segments(merged_segments, max_chars)
+        logger.info(f"Split into {len(chunks)} LLM input chunks (target {max_chars} chars)")
+        print(f"  → Merged {len(segments)} segments into {len(merged_segments)} blocks, split into {len(chunks)} API calls...")
         
         all_sections = []
         
         for i, chunk in enumerate(chunks):
             # Calculate actual char count for logging
             chunk_chars = sum(len(s.get("text", "")) for s in chunk)
-            print(f"\n  → [{i+1}/{len(chunks)}] Polishing chunk {i+1} ({len(chunk)} segments, {chunk_chars} chars)...", flush=True)
+            print(f"\n  → [{i+1}/{len(chunks)}] Polishing chunk {i+1} ({len(chunk)} blocks, {chunk_chars} chars)...", flush=True)
             
-            # Format chunk for LLM
+            # Format chunk for LLM (using merged dict format)
             chunk_json = self._format_segments_for_llm(chunk)
             
             # Context from previous chunk (last section title)
@@ -336,7 +376,17 @@ class TextPolisher:
                 last_section = all_sections[-1]
                 previous_context = f"Previous section: {last_section.get('title', 'Introduction')}"
             
-            structured_chunk = self._polish_json_chunk(chunk_json, video_title, previous_context, i, len(chunks))
+            structured_chunk = self._polish_json_chunk(
+                chunk_json, 
+                video_title, 
+                previous_context, 
+                i, 
+                len(chunks),
+                system_prompt=system_prompt,
+                user_prompt_template=user_prompt_template,
+                max_tokens=max_tokens,
+                temperature=temperature
+            )
             
             if structured_chunk and "sections" in structured_chunk:
                 # Merge logic: if first section of new chunk has same title as last section of previous, merge them
@@ -358,23 +408,77 @@ class TextPolisher:
                 
         return {"sections": all_sections}
 
-    def _chunk_segments_by_chars(self, segments: List[Dict[str, Any]], max_chars: int) -> List[List[Dict[str, Any]]]:
-        """Split segments into chunks based on accumulated character count"""
+    def _merge_sequential_segments(self, segments: List[Dict[str, Any]], max_chars_per_item: int = 5000) -> List[Dict[str, Any]]:
+        """
+        Merge sequential transcript segments into larger blocks.
+        
+        Logic:
+        - Combine text from sequential segments
+        - Keep start time of first segment
+        - Keep end time of last segment
+        - Discard confidence and no_speech_prob
+        - Limit each merged block to max_chars_per_item
+        """
+        if not segments:
+            return []
+            
+        merged = []
+        current_block = None
+        
+        for seg in segments:
+            start = seg.get("start", 0.0)
+            end = seg.get("end", 0.0)
+            text = seg.get("text", "").strip()
+            
+            if not text:
+                continue
+                
+            if current_block is None:
+                current_block = {
+                    "start": start,
+                    "end": end,
+                    "text": text
+                }
+            else:
+                # Check if adding this segment would exceed the limit
+                if len(current_block["text"]) + len(text) + 1 > max_chars_per_item:
+                    # Finalize current block and start new one
+                    merged.append(current_block)
+                    current_block = {
+                        "start": start,
+                        "end": end,
+                        "text": text
+                    }
+                else:
+                    # Merge into current block
+                    current_block["text"] += " " + text
+                    current_block["end"] = end
+                    
+        # Add last block
+        if current_block:
+            merged.append(current_block)
+            
+        return merged
+
+    def _chunk_merged_segments(self, segments: List[Dict[str, Any]], max_chars: int) -> List[List[Dict[str, Any]]]:
+        """Split merged segments into chunks based on accumulated character count"""
         chunks = []
         current_chunk = []
-        current_chars = 0
+        current_size = 0
         
         for seg in segments:
             text_len = len(seg.get("text", ""))
+            # Heuristic: Text + 50 chars overhead for JSON structure
+            item_size = text_len + 50
             
             # If adding this segment exceeds limit AND we have content, start new chunk
-            if current_chars + text_len > max_chars and current_chunk:
+            if current_size + item_size > max_chars and current_chunk:
                 chunks.append(current_chunk)
                 current_chunk = [seg]
-                current_chars = text_len
+                current_size = item_size
             else:
                 current_chunk.append(seg)
-                current_chars += text_len
+                current_size += item_size
                 
         # Add last chunk
         if current_chunk:
@@ -382,15 +486,12 @@ class TextPolisher:
             
         return chunks
 
-    def _chunk_segments(self, segments: List[Dict[str, Any]], chunk_size: int) -> List[List[Dict[str, Any]]]:
-        """Legacy: Split segments into chunks by count"""
-        return [segments[i:i + chunk_size] for i in range(0, len(segments), chunk_size)]
-
     def _format_segments_for_llm(self, segments: List[Dict[str, Any]]) -> str:
-        """Format segments as compact JSON-like string"""
+        """Format segments as JSON list of dicts (standard format)"""
         import json
         
-        compact_segs = []
+        # Prepare list of dicts with only necessary fields
+        formatted_segs = []
         for seg in segments:
             # Format timestamp as HH:MM:SS
             seconds = seg.get("start", 0)
@@ -399,12 +500,12 @@ class TextPolisher:
             secs = int(seconds % 60)
             ts = f"{hours:02d}:{minutes:02d}:{secs:02d}"
             
-            compact_segs.append({
-                "t": ts,
-                "txt": seg.get("text", "").strip()
+            formatted_segs.append({
+                "start": ts,
+                "text": seg.get("text", "").strip()
             })
             
-        return json.dumps(compact_segs, ensure_ascii=False)
+        return json.dumps(formatted_segs, ensure_ascii=False)
 
     def _polish_json_chunk(
         self, 
@@ -412,50 +513,24 @@ class TextPolisher:
         video_title: str, 
         context: str,
         chunk_index: int,
-        total_chunks: int
+        total_chunks: int,
+        system_prompt: str = None,
+        user_prompt_template: str = None,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None
     ) -> Optional[Dict[str, Any]]:
         """Call LLM to polish a chunk of segments into structured JSON"""
         
-        system_prompt = """You are an expert content editor. Your task is to structure raw transcript segments into a polished, professional document.
+        system_prompt = system_prompt or TRANSCRIPT_POLISH_SYSTEM_PROMPT
+        user_prompt_tmpl = user_prompt_template or TRANSCRIPT_POLISH_USER_PROMPT
 
-[INPUT FORMAT]
-A JSON list of segments: [{"t": "timestamp", "txt": "raw text"}, ...]
-
-[TASK]
-1. Consolidate adjacent segments into coherent, well-written paragraphs.
-2. Group paragraphs into logical SECTIONS with descriptive HEADERS.
-3. PRESERVE timestamps: Start each paragraph with the timestamp of its first segment.
-4. Output strict JSON format.
-
-[STRICT RULES]
-- Do NOT rewrite the meaning. Polish grammar and flow only.
-- Do NOT omit content.
-- Headers should be descriptive (5-15 chars).
-- Timestamps MUST be in "HH:MM:SS" format.
-
-[OUTPUT SCHEMA]
-{
-  "sections": [
-    {
-      "title": "Section Title",
-      "paragraphs": [
-        {
-          "timestamp": "HH:MM:SS",
-          "content": "Polished paragraph text..."
-        }
-      ]
-    }
-  ]
-}"""
-
-        user_prompt = f"""Video Title: {video_title}
-Context: {context}
-Part {chunk_index+1} of {total_chunks}
-
-Raw Segments:
-{chunk_json}
-
-Please structure this content into sections and paragraphs with timestamps. Return JSON only."""
+        user_prompt = user_prompt_tmpl.format(
+            video_title=video_title,
+            context=context,
+            chunk_index=chunk_index+1,
+            total_chunks=total_chunks,
+            chunk_json=chunk_json
+        )
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -463,7 +538,11 @@ Please structure this content into sections and paragraphs with timestamps. Retu
         ]
         
         print(f"     Calling API...", end="", flush=True)
-        content = self._call_deepseek(messages, max_tokens=4000)
+        content = self.llm_client.chat_completion(
+            messages, 
+            max_tokens=max_tokens or self.max_tokens,
+            temperature=temperature if temperature is not None else self.default_temperature
+        )
         
         if not content:
             print(" Failed!")
@@ -488,7 +567,8 @@ Please structure this content into sections and paragraphs with timestamps. Retu
             return None
 
     def polish(self, raw_transcript: str, video_title: str = "", 
-               duration_minutes: float = 0) -> Optional[str]:
+               duration_minutes: float = 0, max_tokens: Optional[int] = None, 
+               temperature: Optional[float] = None) -> Optional[str]:
         """
         Polish raw transcript
         
@@ -500,11 +580,13 @@ Please structure this content into sections and paragraphs with timestamps. Retu
             raw_transcript: Raw transcript text from Whisper
             video_title: Optional video title for context
             duration_minutes: Video duration in minutes
+            max_tokens: Optional override for max tokens
+            temperature: Optional override for temperature
             
         Returns:
             Polished text with chapter markers, or None if failed
         """
-        if not self.client:
+        if not self.llm_client:
             logger.warning("TextPolisher not available, returning raw transcript")
             return raw_transcript
             
@@ -517,8 +599,8 @@ Please structure this content into sections and paragraphs with timestamps. Retu
         print(f"  → Text length: {text_length} chars")
 
         # Check if checkpoint exists (if enabled)
-        from config.settings import DEEPSEEK_CONFIG
-        if DEEPSEEK_CONFIG.get("enable_checkpoint", False):
+        config = TEXT_LLM_CONFIGS.get(self.provider, {})
+        if config.get("enable_checkpoint", False):
             checkpoint = self._load_checkpoint(video_title)
             if checkpoint:
                 print(f"\n[RESUME] Found checkpoint for: {video_title}")
@@ -529,30 +611,38 @@ Please structure this content into sections and paragraphs with timestamps. Retu
         # Use simple single-turn for texts under 4500 chars
         if text_length <= self.MAX_SINGLE_TURN:
             print(f"  → Using single-turn processing...")
-            return self._polish_single_turn(raw_transcript, video_title)
+            return self._polish_single_turn(raw_transcript, video_title, max_tokens, temperature)
 
         # Use concurrent/checkpoint processing for long texts (if enabled)
-        if DEEPSEEK_CONFIG.get("enable_concurrent", False):
+        if config.get("enable_concurrent", False):
             print(f"  → Using concurrent processing with checkpoint...")
-            return self._polish_with_checkpoint(raw_transcript, video_title, duration_minutes)
+            return self._polish_with_checkpoint(raw_transcript, video_title, duration_minutes, max_tokens, temperature)
 
         # Fall back to multi-turn processing
         print(f"  → Using multi-turn processing...")
-        return self._polish_multi_turn(raw_transcript, video_title, duration_minutes)
+        return self._polish_multi_turn(raw_transcript, video_title, duration_minutes, max_tokens, temperature)
 
-    def _polish_single_turn(self, text: str, video_title: str = "") -> Optional[str]:
+    def _polish_single_turn(
+        self,
+        text: str,
+        video_title: str = "",
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None
+    ) -> Optional[str]:
         """
-        Polish text in a single API call (for texts under 25000 chars)
-        
+        Polish short text in a single turn.
+
         Args:
             text: Raw transcript text
             video_title: Optional video title
-            
+            max_tokens: Optional override for max tokens
+            temperature: Optional override for temperature
+
         Returns:
-            Polished text
+            Polished text, or original text if failed
         """
-        title_context = f"Video title: {video_title}\n" if video_title else ""
-        
+        title_context = self._get_title_context(video_title, 0)
+
         system_prompt = """You are a professional transcript proofreader. Your task is to clean up speech-to-text transcripts.
 
 [STRICT REQUIREMENTS]
@@ -594,17 +684,22 @@ Requirements:
         ]
 
         print(f"  → Calling DeepSeek (this may take 1-2 minutes)...", end="", flush=True)
-        content = self._call_deepseek(messages)
-        
+        content = self.llm_client.chat_completion(
+            messages,
+            max_tokens=max_tokens or self.max_tokens,
+            temperature=temperature if temperature is not None else self.default_temperature
+        )
+
         if content:
             print(" Done!")
-        else:
-            print(" Failed!")
-        
-        return content
+            return content
 
+        print(" Failed!")
+        return text
     def _polish_multi_turn(self, text: str, video_title: str = "",
-                           duration_minutes: float = 0) -> Optional[str]:
+                           duration_minutes: float = 0,
+                           max_tokens: Optional[int] = None,
+                           temperature: Optional[float] = None) -> Optional[str]:
         """
         Polish long text using incremental strategy (polish each chunk independently, then merge).
 
@@ -619,6 +714,8 @@ Requirements:
             text: Raw transcript text
             video_title: Optional video title
             duration_minutes: Video duration
+            max_tokens: Optional override for max tokens
+            temperature: Optional override for temperature
 
         Returns:
             Polished text with chapters
@@ -705,7 +802,11 @@ Note: Use paragraph breaks (\\n\\n). Do NOT use ## markers."""
 
                     # Polish this chunk with 8K max output
                     print(f"     Calling API...", end="", flush=True)
-                    polished_chunk = self._call_deepseek(messages, max_tokens=self.max_tokens)
+                    polished_chunk = self.llm_client.chat_completion(
+                        messages, 
+                        max_tokens=max_tokens or self.max_tokens,
+                        temperature=temperature if temperature is not None else self.default_temperature
+                    )
 
                     if polished_chunk:
                         polished_chunks.append(polished_chunk)
@@ -838,16 +939,22 @@ Note: Use paragraph breaks (\\n\\n). Do NOT use ## markers."""
             {"role": "user", "content": user_content}
         ]
 
-    def _process_single_chunk(self, chunk_id: int, chunk: str, messages: list, checkpoint_data: dict, video_title: str) -> str:
+    def _process_single_chunk(self, chunk_id: int, chunk: str, messages: list, checkpoint_data: dict, video_title: str,
+                            max_tokens: Optional[int] = None, temperature: Optional[float] = None) -> str:
         """Process single chunk with retry and checkpoint saving"""
-        from config.settings import DEEPSEEK_CONFIG
-        max_retries = DEEPSEEK_CONFIG.get("max_chunk_retries", 3)
+        from config.settings import TEXT_LLM_CONFIGS
+        config = TEXT_LLM_CONFIGS.get(self.provider, {})
+        max_retries = config.get("max_chunk_retries", 3)
 
         for attempt in range(max_retries):
             try:
                 print(f"[PROCESSING] Chunk {chunk_id+1} (attempt {attempt+1}/{max_retries})", end="", flush=True)
 
-                polished = self._call_deepseek(messages, max_tokens=self.max_tokens)
+                polished = self.llm_client.chat_completion(
+                    messages, 
+                    max_tokens=max_tokens or self.max_tokens,
+                    temperature=temperature if temperature is not None else self.default_temperature
+                )
 
                 if polished:
                     # Update checkpoint
@@ -866,15 +973,17 @@ Note: Use paragraph breaks (\\n\\n). Do NOT use ## markers."""
                 logger.warning(f"Chunk {chunk_id+1} attempt {attempt+1} failed: {e}")
                 if attempt < max_retries - 1:
                     import time
-                    time.sleep(DEEPSEEK_CONFIG.get("retry_delay", 5))
+                    time.sleep(config.get("retry_delay", 5))
 
         raise Exception(f"Failed to process chunk {chunk_id} after {max_retries} attempts")
 
-    def _polish_with_checkpoint(self, text: str, video_title: str, duration_minutes: float) -> Optional[str]:
+    def _polish_with_checkpoint(self, text: str, video_title: str, duration_minutes: float,
+                              max_tokens: Optional[int] = None, temperature: Optional[float] = None) -> Optional[str]:
         """Polish with checkpoint and concurrent processing"""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from datetime import datetime
-        from config.settings import DEEPSEEK_CONFIG
+        from config.settings import TEXT_LLM_CONFIGS
+        config = TEXT_LLM_CONFIGS.get(self.provider, {})
 
         chunks = self._split_into_chunks(text)
         total_chunks = len(chunks)
@@ -888,7 +997,7 @@ Note: Use paragraph breaks (\\n\\n). Do NOT use ## markers."""
                 "total_chunks": total_chunks,
                 "timestamp": datetime.now().isoformat(),
                 "model": self.model,
-                "max_tokens": self.max_tokens
+                "max_tokens": max_tokens or self.max_tokens
             },
             "chunks": [
                 {
@@ -905,7 +1014,7 @@ Note: Use paragraph breaks (\\n\\n). Do NOT use ## markers."""
 
         # Process chunks concurrently
         polished_chunks = [None] * total_chunks
-        max_workers = DEEPSEEK_CONFIG.get("max_concurrent", 3)
+        max_workers = config.get("max_concurrent", 3)
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
@@ -914,7 +1023,7 @@ Note: Use paragraph breaks (\\n\\n). Do NOT use ## markers."""
                 messages = self._build_chunk_messages(chunk_id, chunk, chunks, video_title, total_chunks)
                 future = executor.submit(
                     self._process_single_chunk,
-                    chunk_id, chunk, messages, checkpoint_data, video_title
+                    chunk_id, chunk, messages, checkpoint_data, video_title, max_tokens, temperature
                 )
                 futures[future] = chunk_id
 

@@ -4,6 +4,22 @@ Global configuration for video2note system
 import os
 from pathlib import Path
 
+
+# Load .env file into environment variables immediately
+def _load_env_file():
+    """Load .env file into environment variables"""
+    env_file = Path(__file__).parent.parent / ".env"
+    if env_file.exists():
+        with open(env_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    os.environ[key.strip()] = value.strip()
+
+_load_env_file()  # Execute immediately to ensure env vars are loaded before os.getenv() calls
+
+
 # Project root
 PROJECT_ROOT = Path(__file__).parent.parent
 OUTPUT_DIR = PROJECT_ROOT / "output"
@@ -47,20 +63,39 @@ GLM_CONFIG = {
 # Doubao configuration (OpenAI-compatible API)
 DOUBAO_CONFIG = {
     "api_key": os.getenv("ARK_API_KEY", ""),
-    "model": "doubao-seed-1-8-251228",  # Updated model name
+    "model": "doubao-seed-1-6-vision-250815",  # Updated model name
     "base_url": "https://ark.cn-beijing.volces.com/api/v3",  # Base URL without /chat/completions
-    "timeout": 180,
+    "timeout": 300,
 #    "max_tokens": 1000,
 }
 
-# DeepSeek configuration (for summary generation and text polishing)
-# All use deepseek-chat model with 128K context window and 8K max output
+# ModelScope configuration (text LLM default)
+MODELSCOPE_CONFIG = {
+    "api_key": os.getenv("MODELSCOPE_TOKEN", ""),
+    "model": "deepseek-ai/DeepSeek-V3.2",
+    "base_url": "https://api-inference.modelscope.cn/v1",
+    "max_tokens": 8192,
+    "thinking": True,
+    "extra_body": {
+        "enable_thinking": True
+    },
+
+    # Concurrency/Checkpoint configuration (shared with DeepSeek)
+    "enable_concurrent": True,
+    "max_concurrent": 3,
+    "enable_checkpoint": True,
+    "checkpoint_dir": OUTPUT_DIR / "polish_checkpoints",
+    "max_chunk_retries": 3,
+    "retry_delay": 5,
+}
+
+# DeepSeek configuration (text LLM fallback)
 DEEPSEEK_CONFIG = {
     "api_key": os.getenv("DEEPSEEK_API_KEY", ""),
-    "model": "deepseek-chat",  # Use chat model for all tasks (128K context, 8K output)
+    "model": "deepseek-chat",
     "base_url": "https://api.deepseek.com",
-    "max_tokens": 8192,  # Maximum output tokens (8K)
-    "thinking": False,  # Thinking mode disabled (not needed for polish/summary)
+    "max_tokens": 8192,
+    "thinking": False,
 
     # 并发/检查点配置
     "enable_concurrent": True,  # Enable concurrent processing
@@ -69,6 +104,13 @@ DEEPSEEK_CONFIG = {
     "checkpoint_dir": OUTPUT_DIR / "polish_checkpoints",  # Checkpoint directory
     "max_chunk_retries": 3,  # Maximum retries per chunk
     "retry_delay": 5,  # Base retry delay in seconds
+}
+
+TEXT_LLM_PROVIDER = os.getenv("TEXT_LLM_PROVIDER", "modelscope")
+
+TEXT_LLM_CONFIGS = {
+    "modelscope": MODELSCOPE_CONFIG,
+    "deepseek": DEEPSEEK_CONFIG,
 }
 
 # Frame extraction configuration

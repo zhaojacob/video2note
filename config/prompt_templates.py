@@ -3,123 +3,172 @@ Prompt templates for image analysis and content processing
 """
 
 PROMPTS = {
-    "auto": """请详细描述这张图片的内容，包括：
-1. 主要视觉元素和对象
-2. 文字内容（如果是文档/PPT/代码）
-3. 关键信息要点
-4. 图表或公式的含义（如果有）
-5. 背景环境和上下文
+    "auto": "Describe the scene, characters, and events within 30 words.",
 
-请用清晰、准确的语言描述，提取所有可见的重要信息。""",
+    "formula": """Identify and explain the mathematical formula in the image:
+1. Re-express the formula using LaTeX format.
+2. Explain the mathematical meaning of the formula.
+3. Define each symbol used.
+4. Explain its role and significance in the context.
 
-    "formula": """请识别并解释图片中的数学公式：
-1. 用LaTeX格式重新表达公式
-2. 解释公式的数学含义
-3. 说明各个符号的定义
-4. 解释其在上下文中的作用和意义
+Ensure the LaTeX format is accurate and the explanation is clear and easy to understand.""",
 
-请确保LaTeX格式准确，解释清晰易懂。""",
+    "code": """Identify the code in the image:
+1. Identify the programming language (Python/Java/C++/JavaScript, etc.).
+2. Extract the complete code, maintaining indentation and formatting.
+3. Briefly explain the main function of the code.
+4. If there is syntax highlighting or comments, please extract them as well.
 
-    "code": """请识别图片中的代码：
-1. 识别编程语言（Python/Java/C++/JavaScript等）
-2. 提取完整代码，保持缩进和格式
-3. 简要说明代码的主要功能
-4. 如果有语法高亮或注释，也请提取
+Ensure the code is complete and the format is correct.""",
 
-请确保代码完整，格式正确。""",
+    "chart": """Analyze the chart in the image:
+1. Identify the chart type (Bar/Line/Pie/Flowchart, etc.).
+2. Describe the main content and data of the chart.
+3. Extract key data points and trends.
+4. Explain the information or conclusion conveyed by the chart.
 
-    "chart": """请分析图片中的图表：
-1. 识别图表类型（柱状图/折线图/饼图/流程图等）
-2. 描述图表的主要内容和数据
-3. 提取关键数据点和趋势
-4. 解释图表所表达的信息或结论
+Accurately extract data information and describe the chart content clearly in text.""",
 
-请准确提取数据信息，用文字清晰描述图表内容。""",
+    "text": """Extract the text content from the image:
+1. Extract all visible text.
+2. Maintain the logical structure and hierarchy of the text.
+3. Identify titles, body text, notes, etc.
+4. If it is a document, extract the complete content.
 
-    "text": """请提取图片中的文字内容：
-1. 提取所有可见文字
-2. 保持文字的逻辑结构和层次
-3. 识别标题、正文、注释等不同类型
-4. 如果是文档，提取完整内容
+Ensure the text extraction is complete and accurate.""",
 
-请确保文字提取完整、准确。""",
+    "slide": """Analyze this PowerPoint slide:
+1. Extract the title and all text content.
+2. Identify the main theme of the slide.
+3. Extract key points and list items.
+4. Describe visual elements like charts and images.
+5. Summarize the core information of the slide.
 
-    "slide": """请分析这张PPT幻灯片：
-1. 提取标题和所有文字内容
-2. 识别幻灯片的主要主题
-3. 提取关键要点和列表项
-4. 描述图表、图片等视觉元素
-5. 总结幻灯片的核心信息
+Organize the extracted information structurally.""",
 
-请结构化地组织提取的信息。""",
+    "general": """Describe this image:
+1. Main objects and characters in the image.
+2. Environment and background information.
+3. Any visible text or signs.
+4. The theme and content of the image.
+5. Possible context information.
 
-    "general": """请描述这张图片：
-1. 图片中的主要对象和人物
-2. 环境和背景信息
-3. 任何可见的文字或标识
-4. 图片的主题和内容
-5. 可能的上下文信息
-
-请用自然语言描述图片内容。"""
+Describe the image content using natural language."""
 }
+
+TRANSCRIPT_POLISH_SYSTEM_PROMPT = """You are an expert content editor. Your task is to structure raw transcript segments into a polished, professional document.
+
+[INPUT FORMAT]
+A JSON list of dicts: [{"start": "HH:MM:SS", "text": "combined text block..."}, ...]
+
+[TASK]
+1. The input contains merged blocks of text with start timestamps.
+2. Structure these blocks into logical SECTIONS with descriptive HEADERS.
+3. Break down long text blocks into readable paragraphs.
+4. PRESERVE the approximate start timestamp for each paragraph (use the timestamp of the source block).
+5. Output strict JSON format.
+
+[STRICT RULES]
+- Do NOT rewrite the meaning. Polish grammar and flow only.
+- Do NOT omit content.
+- Headers should be descriptive (5-15 chars).
+- Timestamps MUST be in "HH:MM:SS" format.
+
+[OUTPUT SCHEMA]
+{
+  "sections": [
+    {
+      "title": "Section Title",
+      "paragraphs": [
+        {
+          "timestamp": "HH:MM:SS",
+          "content": "Polished paragraph text..."
+        }
+      ]
+    }
+  ]
+}"""
+
+TRANSCRIPT_POLISH_USER_PROMPT = """Video Title: {video_title}
+Context: {context}
+Part {chunk_index} of {total_chunks}
+
+Raw Segments:
+{chunk_json}
+
+Please structure this content into sections and paragraphs with timestamps. Return JSON only."""
 
 
 STRUCTURE_PROMPTS = {
-    "summarize": """请根据以下视频转录文本，生成一个结构化的摘要：
+    "summarize": """Video Title: {video_title}
+
+Please generate a high-quality, structured summary based on the following video transcript.
 
 {transcript}
 
-请提供：
-1. 视频主题（一句话概括）
-2. 关键词（3-5个）
-3. 主要内容概述（200-300字）
-4. 按时间顺序的主要观点列表""",
+Your summary should mirror the depth and structure of a professional briefing. Please provide:
 
-    "segment": """请将以下视频转录文本按主题分成若干章节：
+1. **Title & Theme**: A concise title and a one-sentence theme statement.
+2. **Keywords**: 3-5 relevant keywords.
+3. **Executive Summary**: A comprehensive narrative (200-300 words) that captures the core thesis, context, and main arguments. Focus on the "So What?" – why this matters.
+4. **Key Points & Strategic Insights**:
+   - Break down the main arguments or events logically (or chronologically if appropriate).
+   - Use bullet points for clarity.
+   - Highlight any strategic shifts, specific proposals, or critical data mentioned.
+5. **Q&A / Specific Highlights** (if applicable): Summarize key questions addressed or specific detailed examples given.
+6. **Conclusion**: A concluding statement about the speaker's final message or the broader implication of the content.
+
+**Style Guidelines**:
+- Use professional, objective language.
+- Ensure logical flow between paragraphs.
+- Avoid generic phrases like "The speaker said"; instead, use "He argued," "She emphasized," "The presentation outlined."
+""",
+
+    "segment": """Please divide the following video transcript into chapters by topic:
 
 {transcript}
 
-要求：
-1. 每个章节有明确的主题
-2. 章节之间按时间顺序排列
-3. 每个章节包含时间范围
-4. 提取每个章节的关键要点
+Requirements:
+1. Each chapter must have a clear topic.
+2. Chapters must be arranged chronologically.
+3. Each chapter must include a time range.
+4. Extract key points for each chapter.
 
-请以JSON格式返回：
+Please return in JSON format:
 {{
     "sections": [
         {{
-            "title": "章节标题",
+            "title": "Chapter Title",
             "start_time": 0.0,
             "end_time": 120.0,
-            "key_points": ["要点1", "要点2"]
+            "key_points": ["Point 1", "Point 2"]
         }}
     ]
 }}""",
 
-    "extract_key_points": """请从以下文本中提取关键要点：
+    "extract_key_points": """Please extract key points from the following text:
 
 {text}
 
-要求：
-1. 提取3-7个最重要的要点
-2. 每个要点简洁明了（一句话）
-3. 按重要性排序
-4. 用列表形式返回"""
+Requirements:
+1. Extract 3-7 most important points.
+2. Each point should be concise and clear (one sentence).
+3. Sort by importance.
+4. Return in a list format."""
 }
 
 
-IMAGE_CLASSIFICATION_PROMPT = """请分析这张图片的内容类型，判断是否包含：
-1. 数学公式（formula）
-2. 代码（code）
-3. 图表（chart）
-4. 大量文字（text）
-5. PPT幻灯片（slide）
-6. 普通场景（general）
+IMAGE_CLASSIFICATION_PROMPT = """Please analyze the content type of this image and determine if it contains:
+1. Mathematical formula (formula)
+2. Code (code)
+3. Chart (chart)
+4. Large amount of text (text)
+5. PowerPoint slide (slide)
+6. General scene (general)
 
-请以JSON格式返回：
+Please return in JSON format:
 {{
-    "primary_type": "主要类型",
+    "primary_type": "Primary Type",
     "has_formula": true/false,
     "has_code": true/false,
     "has_chart": true/false,

@@ -287,6 +287,11 @@ class DocxGenerator:
                 self._style_heading(heading)
             
             for para in section.get("paragraphs", []):
+                # Images (render BEFORE text to ensure opening images appear at top)
+                images = para.get("images", [])
+                for img in images:
+                    self._add_transcript_image(doc, img)
+
                 # Paragraph
                 p = doc.add_paragraph()
                 p.paragraph_format.first_line_indent = Inches(0.5)
@@ -303,11 +308,6 @@ class DocxGenerator:
                 if content:
                     run = p.add_run(content)
                     self._set_run_font(run)
-                
-                # Images
-                images = para.get("images", [])
-                for img in images:
-                    self._add_transcript_image(doc, img)
 
     def _render_chapters_with_images(
         self, 

@@ -105,8 +105,8 @@ class Structurer:
         
         # Step 1: Polish transcript (JSON structured)
         if enable_polish and transcript:
-            logger.info("Polishing transcript with DeepSeek (Structured JSON)...")
-            print("\n[Text Polish] Polishing transcript with DeepSeek (Structured JSON)...")
+            logger.info("Polishing transcript with text LLM (Structured JSON)...")
+            print("\n[Text Polish] Polishing transcript with text LLM (Structured JSON)...")
             try:
                 polisher = self._get_text_polisher()
                 if polisher.is_available():
@@ -119,6 +119,11 @@ class Structurer:
                     polished_sections = polish_result.get("sections", [])
                     
                     if polished_sections:
+                        # NEW: Align timestamps using fuzzy matching
+                        # The LLM often fails to preserve accurate timestamps, so we align back to raw transcript
+                        print("[Text Polish] Aligning timestamps using fuzzy matching...")
+                        self._align_timestamps_fuzzy(polished_sections, transcript)
+                        
                         # Reconstruct polished text for summary generation
                         all_paragraphs = []
                         for section in polished_sections:
@@ -133,7 +138,7 @@ class Structurer:
                     else:
                         print("[Text Polish] No structured output, using raw transcript")
                 else:
-                    print("[Text Polish] Skipped (no DeepSeek API key)")
+                    print("[Text Polish] Skipped (no text LLM API key)")
             except Exception as e:
                 logger.error(f"Failed to polish transcript: {e}")
                 print(f"[Text Polish] Failed: {e}")
@@ -142,8 +147,8 @@ class Structurer:
 
         # Step 2: Generate AI summary
         if summary is None and generate_ai_summary and polished_text:
-            logger.info("Generating AI summary with DeepSeek Reasoner...")
-            print("\n[AI Summary] Generating summary with DeepSeek Reasoner...")
+            logger.info("Generating AI summary with text LLM...")
+            print("\n[AI Summary] Generating summary with text LLM...")
             try:
                 summary_gen = self._get_summary_generator()
                 if summary_gen.is_available():
@@ -156,7 +161,7 @@ class Structurer:
                     else:
                         print("[AI Summary] Empty response")
                 else:
-                    print("[AI Summary] Skipped (no DeepSeek API key)")
+                    print("[AI Summary] Skipped (no text LLM API key)")
             except Exception as e:
                 logger.error(f"Failed to generate AI summary: {e}")
                 print(f"[AI Summary] Failed: {e}")
@@ -244,6 +249,84 @@ class Structurer:
         logger.info(f"Structured {len(structured['sections'])} sections")
 
         return structured
+
+    def _align_timestamps_fuzzy(
+        self,
+        polished_sections: List[Dict[str, Any]],
+        raw_transcript: List[Dict[str, Any]]
+    ):
+        """
+        Align polished paragraphs with raw transcript using fuzzy text matching.
+        Updates timestamps in polished_sections in-place.
+        """
+        import difflib
+        
+        # Helper to normalize text for matching
+        def normalize(text):
+            return "".join(c.lower() for c in text if c.isalnum())
+
+        if not raw_transcript or not polished_sections:
+            return
+
+        # Prepare raw transcript index
+        # We'll search through raw segments sequentially
+        current_raw_idx = 0
+        total_raw = len(raw_transcript)
+        
+        for section in polished_sections:
+            for para in section.get("paragraphs", []):
+                para_text = para.get("content", "")
+                if not para_text:
+                    continue
+                    
+                # Take first ~50 chars of normalized paragraph text as query
+                query = normalize(para_text[:100])
+                if len(query) < 10:
+                    continue
+                    
+                best_ratio = 0.0
+                best_idx = current_raw_idx
+                
+                # Search window: current position + next 50 segments (optimization)
+                # If not found, extend search to end (fallback)
+                search_end = min(current_raw_idx + 50, total_raw)
+                
+                found_match = False
+                
+                # First pass: local search
+                for i in range(current_raw_idx, search_end):
+                    raw_text = normalize(raw_transcript[i].get("text", ""))
+                    if not raw_text:
+                        continue
+                        
+                    # Check similarity
+                    ratio = difflib.SequenceMatcher(None, query, raw_text).ratio()
+                    
+                    # Also check if query is a substring of raw (or vice versa)
+                    if query in raw_text or raw_text in query:
+                        ratio = max(ratio, 0.8) # Boost substring matches
+                    
+                    if ratio > best_ratio:
+                        best_ratio = ratio
+                        best_idx = i
+                
+                # If match is good enough, update timestamp and advance cursor
+                if best_ratio > 0.4: # Threshold for fuzzy match
+                    current_raw_idx = best_idx
+                    
+                    # Update timestamp
+                    start_time = raw_transcript[best_idx].get("start", 0)
+                    
+                    # Format as HH:MM:SS
+                    hours = int(start_time // 3600)
+                    minutes = int((start_time % 3600) // 60)
+                    secs = int(start_time % 60)
+                    para["timestamp"] = f"{hours:02d}:{minutes:02d}:{secs:02d}"
+                    # Also store seconds for image interleaving
+                    para["timestamp_seconds"] = start_time
+                else:
+                    # If no good match found, keep existing timestamp (from LLM) or inherit from previous
+                    pass
 
     def _interleave_images_into_sections(
         self,

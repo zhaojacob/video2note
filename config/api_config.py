@@ -41,6 +41,26 @@ def get_doubao_api_key() -> str:
     return api_key
 
 
+def get_modelscope_token() -> str:
+    """Get ModelScope Token from environment"""
+    load_env_vars()
+    token = os.getenv("MODELSCOPE_TOKEN", "")
+    if not token:
+        # Warning only, as it might be optional if using other providers
+        print("[!] MODELSCOPE_TOKEN not found. ModelScope integration will be disabled.")
+    return token
+
+
+def get_deepseek_api_key() -> str:
+    """Get DeepSeek API key from environment"""
+    load_env_vars()
+    api_key = os.getenv("DEEPSEEK_API_KEY", "")
+    if not api_key:
+         # Warning only
+        print("[!] DEEPSEEK_API_KEY not found. DeepSeek integration will be disabled.")
+    return api_key
+
+
 def validate_api_keys():
     """Validate that all required API keys are set"""
     try:
@@ -55,6 +75,18 @@ def validate_api_keys():
     except ValueError as e:
         print(f"[X] {e}")
 
+    token = get_modelscope_token()
+    if token:
+        print("[OK] ModelScope Token is configured")
+    else:
+        print("[!] ModelScope Token is missing")
+
+    key = get_deepseek_api_key()
+    if key:
+        print("[OK] DeepSeek API Key is configured")
+    else:
+        print("[!] DeepSeek API Key is missing")
+
 
 # Example .env file template
 ENV_TEMPLATE = """# Video Note System - Environment Variables
@@ -66,6 +98,14 @@ GLM_API_KEY=your_glm_api_key_here
 # Doubao API Key (Ark API)
 # Get from: https://www.volcengine.com/docs/82379/1399008
 ARK_API_KEY=your_ark_api_key_here
+
+# ModelScope Token
+# Get from: https://modelscope.cn/my/myaccesstoken
+MODELSCOPE_TOKEN=your_modelscope_token_here
+
+# DeepSeek API Key (Optional fallback)
+# Get from: https://platform.deepseek.com/
+DEEPSEEK_API_KEY=your_deepseek_api_key_here
 
 # Optional: HTTP Proxy
 # HTTP_PROXY=http://127.0.0.1:7890
