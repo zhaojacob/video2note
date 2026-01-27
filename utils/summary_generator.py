@@ -80,59 +80,67 @@ class SummaryGenerator:
         self,
         transcript_text: str,
         video_title: str = "",
+        video_duration: float = 0,
         max_length: int = 500,
         max_tokens: Optional[int] = None,
         temperature: float = 0.7
     ) -> str:
         """
         Generate a summary from transcript text
-        
+
         Args:
             transcript_text: Full transcript text (polished or raw)
             video_title: Video title for context
-            max_length: Maximum summary length in characters
+            video_duration: Video duration in minutes (for calculating summary length)
+            max_length: Maximum summary length in characters (deprecated, kept for compatibility)
             max_tokens: Optional override for max tokens
             temperature: Optional override for temperature
-            
+
         Returns:
             Generated summary string
         """
         if not self.client:
             logger.warning("DeepSeek client not initialized, returning empty summary")
             return ""
-        
+
         if not transcript_text or len(transcript_text.strip()) < 50:
             logger.warning("Transcript too short for summary generation")
             return ""
-        
+
         # Truncate very long transcripts to fit context window
         max_input_chars = 30000  # Increased for thinking mode
         if len(transcript_text) > max_input_chars:
             transcript_text = transcript_text[:max_input_chars] + "..."
             logger.info(f"Transcript truncated to {max_input_chars} characters")
-        
+
+        # Calculate summary length based on video duration (duration * 25)
+        summary_length = int(video_duration * 25) if video_duration > 0 else 250
+        logger.info(f"Video duration: {video_duration:.1f}min, target summary length: {summary_length} chars")
+
         prompt = STRUCTURE_PROMPTS["summarize"].format(
             video_title=video_title or "Untitled",
-            transcript=transcript_text
+            video_duration=f"{video_duration:.1f}",
+            transcript=transcript_text,
+            summary_length=summary_length
         )
 
         messages = [{"role": "user", "content": prompt}]
 
         logger.info(f"Generating summary with text LLM ({self.provider})...")
         content = self._call_text_llm(messages, max_tokens=max_tokens or 4096, temperature=temperature)
-        
+
         if not content:
             logger.warning("Empty response from DeepSeek")
             return ""
-        
+
         summary = content.strip()
-        
+
         # Remove common prefixes if present
         prefixes_to_remove = ["摘要：", "摘要:", "Summary:", "总结：", "总结:"]
         for prefix in prefixes_to_remove:
             if summary.startswith(prefix):
                 summary = summary[len(prefix):].strip()
-        
+
         logger.info(f"Summary generated successfully ({len(summary)} chars)")
         return summary
 
@@ -196,16 +204,17 @@ class SummaryGenerator:
         return keywords[:max_keywords]
 
 
-def generate_summary(transcript_text: str, video_title: str = "") -> str:
+def generate_summary(transcript_text: str, video_title: str = "", video_duration: float = 0) -> str:
     """
     Convenience function to generate summary
-    
+
     Args:
         transcript_text: Full transcript text
         video_title: Video title
-        
+        video_duration: Video duration in minutes
+
     Returns:
         Summary string
     """
     generator = SummaryGenerator()
-    return generator.generate_summary(transcript_text, video_title)
+    return generator.generate_summary(transcript_text, video_title, video_duration)

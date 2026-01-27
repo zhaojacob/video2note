@@ -152,9 +152,14 @@ class Structurer:
             try:
                 summary_gen = self._get_summary_generator()
                 if summary_gen.is_available():
+                    # Calculate video duration in minutes
+                    video_duration_seconds = video_info.get("duration", 0)
+                    video_duration_minutes = video_duration_seconds / 60 if video_duration_seconds else 0
+
                     summary = summary_gen.generate_summary(
                         polished_text,
-                        video_info.get("title", "")
+                        video_info.get("title", ""),
+                        video_duration=video_duration_minutes
                     )
                     if summary:
                         print(f"[AI Summary] Generated ({len(summary)} chars)")

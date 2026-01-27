@@ -100,28 +100,44 @@ Please structure this content into sections and paragraphs with timestamps. Retu
 
 
 STRUCTURE_PROMPTS = {
-    "summarize": """Video Title: {video_title}
+    "summarize": """视频标题：{video_title}
+视频时长：约{video_duration}分钟
 
-Please generate a high-quality, structured summary based on the following video transcript.
+请根据以下视频字幕生成高质量的中文摘要。
 
 {transcript}
 
-Your summary should mirror the depth and structure of a professional briefing. Please provide:
+请按照以下结构生成摘要（使用括号标签）：
 
-1. **Title & Theme**: A concise title and a one-sentence theme statement.
-2. **Keywords**: 3-5 relevant keywords.
-3. **Executive Summary**: A comprehensive narrative (200-300 words) that captures the core thesis, context, and main arguments. Focus on the "So What?" – why this matters.
-4. **Key Points & Strategic Insights**:
-   - Break down the main arguments or events logically (or chronologically if appropriate).
-   - Use bullet points for clarity.
-   - Highlight any strategic shifts, specific proposals, or critical data mentioned.
-5. **Q&A / Specific Highlights** (if applicable): Summarize key questions addressed or specific detailed examples given.
-6. **Conclusion**: A concluding statement about the speaker's final message or the broader implication of the content.
+【标题】[视频的简洁标题]
+【主题】[一句话概括视频的核心主题]
 
-**Style Guidelines**:
-- Use professional, objective language.
-- Ensure logical flow between paragraphs.
-- Avoid generic phrases like "The speaker said"; instead, use "He argued," "She emphasized," "The presentation outlined."
+【关键词】[3-5个关键词，用顿号分隔。如果某些专有名词、技术术语或品牌名称没有合适的中文翻译，或保留原文更准确，请在中文后的括号中注明原文。例如："Transformer模型"或"深度学习（Deep Learning）"或"注意力机制（Self-Attention）"]
+
+【内容概述】
+[请生成约{summary_length}字的执行摘要，涵盖核心论点、背景和主要内容。重点回答"这意味着什么"——为什么这个内容重要。摘要长度应为视频时长的25倍左右。对于没有合适中文翻译的专有名词、技术术语或品牌名称，在首次出现时可以在括号中注明原文，例如："Transformer（Transformer模型架构）"或"GitHub（代码托管平台）"。]
+
+【要点解析】
+• 要点1
+• 要点2
+• 要点3
+[按逻辑或时间顺序分解主要论点，使用项目符号列表，突出战略转变、具体建议或关键数据。如果有具体案例或数据，请在此处包含。]
+
+【总结】
+[对演讲者最终信息或内容 broader implication 的结论陈述。]
+
+**格式要求**：
+- 使用专业的中文表达
+- 确保段落间逻辑流畅
+- 避免使用"演讲者说"等泛泛之词，改用"他强调"、"她指出"、"内容包括"等具体表述
+- 严格使用上述括号标签格式（如【标题】、【主题】等），不要使用markdown标记（不要使用**或*）
+- 不需要生成英文版本
+- 【内容概述】长度应约为视频时长的25倍（例如：10分钟视频→约250字，20分钟→约500字）
+- **专有名词处理**：对于没有合适中文翻译的专有名词、技术术语、品牌名称等，应在中文后的括号中注明原文，例如：
+  - "Transformer（Transformer模型架构）"
+  - "GitHub（代码托管平台）"
+  - "Docker（容器化平台）"
+  - 或直接使用原文如"ChatGPT"、"Transformer"等
 """,
 
     "segment": """Please divide the following video transcript into chapters by topic:

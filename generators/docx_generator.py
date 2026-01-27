@@ -6,6 +6,7 @@ Word document generator - New format with proper fonts
 - 字号：小四 (12pt)
 - 颜色：黑色正文，灰色图片标注
 """
+import re
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
@@ -203,29 +204,63 @@ class DocxGenerator:
         p.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
         doc.add_paragraph()  # Empty line
 
+    def _clean_markdown_formatting(self, text: str) -> str:
+        """
+        Clean markdown formatting from summary text for Word document
+
+        Args:
+            text: Raw text with potential markdown formatting
+
+        Returns:
+            Cleaned text suitable for Word document
+        """
+        if not text:
+            return text
+
+        # Remove markdown bold markers
+        text = re.sub(r'\*\*\*(.+?)\*\*\*', r'\1', text)  # ***bold***
+        text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)      # **bold**
+        text = re.sub(r'\*(.+?)\*', r'\1', text)          # *italic*
+
+        # Clean up label formatting like "*   **Title:** text"
+        text = re.sub(r'^\*\s+\*\*([^:]+):\*\*\s*', r'\1：', text, flags=re.MULTILINE)
+
+        # Remove bullet point markers if they exist (Word uses its own formatting)
+        text = re.sub(r'^\s*[\*\-•]\s+', '• ', text, flags=re.MULTILINE)
+
+        # Clean up extra spaces
+        text = re.sub(r'\s{3,}', ' ', text)  # Replace 3+ spaces with single space
+        text = re.sub(r'\n\s+\n', '\n\n', text)  # Remove trailing spaces from empty lines
+
+        return text.strip()
+
     def _add_summary(self, doc: Document, summary: str, summary_translated: str = ""):
         """Add summary section with optional translation"""
         heading = doc.add_heading("摘要", level=2)
         for run in heading.runs:
             self._set_run_font(run, size=FONT_SIZE_HEADING, bold=True)
-        
+
         if summary:
+            # Clean markdown formatting before adding to document
+            cleaned_summary = self._clean_markdown_formatting(summary)
+
             p = doc.add_paragraph()
-            run = p.add_run(summary)
+            run = p.add_run(cleaned_summary)
             self._set_run_font(run)
             p.paragraph_format.line_spacing = 1.5
-            
-            # Add translated summary
+
+            # Add translated summary if available
             if summary_translated:
+                cleaned_translated = self._clean_markdown_formatting(summary_translated)
                 p2 = doc.add_paragraph()
-                run2 = p2.add_run(summary_translated)
+                run2 = p2.add_run(cleaned_translated)
                 self._set_run_font(run2, color=COLOR_GRAY, italic=True)
                 p2.paragraph_format.line_spacing = 1.5
         else:
             p = doc.add_paragraph()
             run = p.add_run("（摘要生成中或未配置 DeepSeek API）")
             self._set_run_font(run, color=COLOR_GRAY, italic=True)
-        
+
         doc.add_paragraph()
 
     def _add_transcript_section(
