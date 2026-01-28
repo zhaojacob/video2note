@@ -345,6 +345,16 @@ class DocxGenerator:
                     content_clean = content.replace('\n', ' ').replace('\r', '')
                     run = p.add_run(content_clean)
                     self._set_run_font(run)
+                
+                # Translation (if available) - render as separate paragraph after original
+                content_translated = para.get("content_translated", "").strip()
+                if content_translated:
+                    content_translated_clean = content_translated.replace('\n', ' ').replace('\r', '')
+                    p2 = doc.add_paragraph()
+                    p2.paragraph_format.left_indent = Inches(0.3)
+                    p2.paragraph_format.line_spacing = 1.5
+                    trans_run = p2.add_run(content_translated_clean)
+                    self._set_run_font(trans_run, color=COLOR_GRAY, italic=True)
 
     def _render_chapters_with_images(
         self, 

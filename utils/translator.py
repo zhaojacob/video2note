@@ -123,6 +123,11 @@ Translation:"""
             logger.error(f"Translation failed: {e}")
             return ""
 
+    # Max characters per batch to stay under output token limit
+    # 6000 chars ≈ 2000-3000 tokens input, translation output ≈ similar
+    # With max_tokens=4096, this leaves safe margin
+    MAX_BATCH_CHARS = 6000
+
     def translate_batch(
         self,
         texts: List[str],
@@ -135,7 +140,7 @@ Translation:"""
         Args:
             texts: List of texts to translate
             target_lang: Target language code
-            batch_size: Number of texts per API call
+            batch_size: Number of texts per API call (may be reduced based on text length)
             
         Returns:
             List of translated texts (same order as input)
@@ -150,29 +155,71 @@ Translation:"""
         target_name = self.get_language_name(target_lang)
         results = []
         
-        # Process in batches
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
+        # Dynamic batching based on character count
+        current_batch = []
+        current_batch_chars = 0
+        current_batch_start_idx = 0
+        
+        for i, text in enumerate(texts):
+            text_len = len(text) if text else 0
             
-            # Skip empty texts but preserve positions
-            non_empty_indices = []
-            non_empty_texts = []
-            for j, text in enumerate(batch):
-                if text and len(text.strip()) >= 2:
-                    non_empty_indices.append(j)
-                    non_empty_texts.append(text)
+            # Check if adding this text would exceed limits
+            would_exceed_chars = current_batch_chars + text_len > self.MAX_BATCH_CHARS
+            would_exceed_count = len(current_batch) >= batch_size
             
-            if not non_empty_texts:
-                results.extend([""] * len(batch))
-                continue
+            if current_batch and (would_exceed_chars or would_exceed_count):
+                # Process current batch
+                batch_results = self._translate_single_batch(current_batch, target_name)
+                results.extend(batch_results)
+                
+                # Start new batch
+                current_batch = [text]
+                current_batch_chars = text_len
+                current_batch_start_idx = i
+            else:
+                current_batch.append(text)
+                current_batch_chars += text_len
+        
+        # Process remaining batch
+        if current_batch:
+            batch_results = self._translate_single_batch(current_batch, target_name)
+            results.extend(batch_results)
+        
+        return results
+
+    def _translate_single_batch(
+        self,
+        batch: List[str],
+        target_name: str
+    ) -> List[str]:
+        """
+        Translate a single batch of texts
+        
+        Args:
+            batch: List of texts to translate
+            target_name: Target language name
             
-            # Create numbered format for batch translation
-            numbered_text = "\n".join([
-                f"[{idx+1}] {text}" 
-                for idx, text in enumerate(non_empty_texts)
-            ])
-            
-            prompt = f"""Translate each numbered item to {target_name}.
+        Returns:
+            List of translated texts
+        """
+        # Skip empty texts but preserve positions
+        non_empty_indices = []
+        non_empty_texts = []
+        for j, text in enumerate(batch):
+            if text and len(text.strip()) >= 2:
+                non_empty_indices.append(j)
+                non_empty_texts.append(text)
+        
+        if not non_empty_texts:
+            return [""] * len(batch)
+        
+        # Create numbered format for batch translation
+        numbered_text = "\n".join([
+            f"[{idx+1}] {text}" 
+            for idx, text in enumerate(non_empty_texts)
+        ])
+        
+        prompt = f"""Translate each numbered item to {target_name}.
 
 Rules:
 1. Keep the [number] prefix for each translation
@@ -185,43 +232,46 @@ Items to translate:
 
 Translations:"""
 
-            try:
-                messages = [
-                    {
-                        "role": "system",
-                        "content": f"You are a professional translator. Translate each numbered item to {target_name}. Keep the [number] format."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
+        try:
+            messages = [
+                {
+                    "role": "system",
+                    "content": f"You are a professional translator. Translate each numbered item to {target_name}. Keep the [number] format."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
 
-                response_text = self.client.chat_completion(
-                    messages=messages,
-                    max_tokens=sum(len(t) * 3 for t in non_empty_texts),
-                    temperature=0.1,
-                    retry_count=2
-                )
+            # Calculate max_tokens: translation output ≈ input length
+            # Use 4096 as safe upper limit
+            total_chars = sum(len(t) for t in non_empty_texts)
+            estimated_output_tokens = min(total_chars * 2, 4096)
 
-                response_text = response_text.strip() if response_text else ""
+            response_text = self.client.chat_completion(
+                messages=messages,
+                max_tokens=estimated_output_tokens,
+                temperature=0.1,
+                retry_count=2
+            )
 
-                # Parse response - extract translations by number
-                translations = self._parse_batch_response(response_text, len(non_empty_texts))
+            response_text = response_text.strip() if response_text else ""
 
-                # Reconstruct full batch with empty strings for skipped items
-                batch_results = [""] * len(batch)
-                for j, idx in enumerate(non_empty_indices):
-                    if j < len(translations):
-                        batch_results[idx] = translations[j]
+            # Parse response - extract translations by number
+            translations = self._parse_batch_response(response_text, len(non_empty_texts))
 
-                results.extend(batch_results)
+            # Reconstruct full batch with empty strings for skipped items
+            batch_results = [""] * len(batch)
+            for j, idx in enumerate(non_empty_indices):
+                if j < len(translations):
+                    batch_results[idx] = translations[j]
 
-            except Exception as e:
-                logger.error(f"Batch translation failed: {e}")
-                results.extend([""] * len(batch))
-        
-        return results
+            return batch_results
+
+        except Exception as e:
+            logger.error(f"Batch translation failed: {e}")
+            return [""] * len(batch)
 
     def _parse_batch_response(self, response: str, expected_count: int) -> List[str]:
         """Parse batch translation response"""

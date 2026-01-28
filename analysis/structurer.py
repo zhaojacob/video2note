@@ -172,33 +172,27 @@ class Structurer:
                 print(f"[AI Summary] Failed: {e}")
                 summary = ""
 
-        # Translation handling
+        # Translation handling - only translate transcript (title and summary are already in Chinese)
         title_translated = ""
         summary_translated = ""
         
         if translate_to:
-            print(f"\n[Translation] Translating content to {translate_to}...")
+            print(f"\n[Translation] Translating transcript to {translate_to}...")
             try:
                 translator = self._get_translator()
                 if translator.is_available():
-                    # Translate title
-                    title_translated = translator.translate_title(
-                        video_info.get("title", ""),
-                        translate_to
-                    )
-                    print(f"[Translation] Title translated")
-                    
-                    # Translate summary
-                    if summary:
-                        summary_translated = translator.translate_summary(summary, translate_to)
-                        print(f"[Translation] Summary translated")
-                    
-                    # Translate transcript segments
+                    # Only translate transcript segments (not title/summary which are already in Chinese)
+                    # Translate raw transcript segments
                     if transcript:
                         transcript = translator.translate_transcript_segments(
                             transcript, translate_to
                         )
                         print(f"[Translation] Transcript translated ({len(transcript)} segments)")
+                    
+                    # Translate polished sections paragraphs
+                    if polished_sections:
+                        self._translate_polished_sections(polished_sections, translator, translate_to)
+                        print(f"[Translation] Polished sections translated")
                 else:
                     print("[Translation] Skipped (no DeepSeek API key)")
             except Exception as e:
@@ -254,6 +248,35 @@ class Structurer:
         logger.info(f"Structured {len(structured['sections'])} sections")
 
         return structured
+
+    def _translate_polished_sections(
+        self,
+        sections: List[Dict[str, Any]],
+        translator,
+        target_language: str
+    ):
+        """
+        Translate polished sections paragraphs in-place.
+        Adds 'content_translated' field to each paragraph.
+        """
+        total_paras = 0
+        translated_count = 0
+        
+        for section in sections:
+            for para in section.get("paragraphs", []):
+                content = para.get("content", "")
+                if content:
+                    total_paras += 1
+                    try:
+                        translated = translator.translate_text(content, target_language)
+                        if translated:
+                            para["content_translated"] = translated
+                            translated_count += 1
+                    except Exception as e:
+                        logger.warning(f"Failed to translate paragraph: {e}")
+                        para["content_translated"] = ""
+        
+        logger.info(f"Translated {translated_count}/{total_paras} paragraphs")
 
     def _align_timestamps_fuzzy(
         self,

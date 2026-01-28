@@ -336,7 +336,23 @@ class PipelineOrchestrator:
                 print("\n" + "=" * 60)
                 print("[Step 7/7] Skipping image analysis (--skip-analysis)")
                 print("=" * 60)
-                frame_analyses = []
+                
+                # Generate placeholder analyses for frames (图片1, 图片2, ...)
+                if unique_frames:
+                    frame_analyses = [
+                        {
+                            "frame_path": f["path"],
+                            "timestamp": f.get("timestamp", 0),
+                            "success": True,
+                            "description": f"图片{i+1}",
+                            "api_used": "placeholder",
+                            "analysis_type": "placeholder"
+                        }
+                        for i, f in enumerate(unique_frames)
+                    ]
+                    print(f"[INFO] Generated {len(frame_analyses)} placeholder captions (图片1, 图片2, ...)")
+                else:
+                    frame_analyses = []
 
             # Structure data (includes Polish and Summary generation)
             print("\n" + "=" * 60)

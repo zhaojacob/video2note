@@ -253,6 +253,12 @@ class MarkdownGenerator:
                     lines.append(f"{ts_mark}{content}")
                     lines.append("")
                 
+                # Translation (if available) - render after original content
+                content_translated = para.get("content_translated", "").strip()
+                if content_translated:
+                    lines.append(f"> *{content_translated}*")
+                    lines.append("")
+                
                 # Images
                 images = para.get("images", [])
                 for img in images:
