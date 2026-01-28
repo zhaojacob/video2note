@@ -63,7 +63,7 @@ GLM_CONFIG = {
 # Doubao configuration (OpenAI-compatible API)
 DOUBAO_CONFIG = {
     "api_key": os.getenv("ARK_API_KEY", ""),
-    "model": "doubao-vision",  # 统一使用 provider_registry.py 中的名称
+    "model": "doubao-seed-1-6-vision-250815",  # 更新为正确的模型 ID
     "base_url": "https://ark.cn-beijing.volces.com/api/v3",  # Base URL without /chat/completions
     "timeout": 300,
     "max_tokens": 1000,
@@ -106,7 +106,7 @@ DEEPSEEK_CONFIG = {
     "retry_delay": 5,  # Base retry delay in seconds
 }
 
-TEXT_LLM_PROVIDER = os.getenv("TEXT_LLM_PROVIDER", "modelscope")
+TEXT_LLM_PROVIDER = os.getenv("TEXT_LLM_PROVIDER", "deepseek")
 
 TEXT_LLM_CONFIGS = {
     "modelscope": MODELSCOPE_CONFIG,
@@ -178,37 +178,70 @@ LOGGING_CONFIG = {
 }
 
 # ============================================================================
-# NEW: Unified LLM Configuration (Recommended)
+# NEW: Unified LLM Configuration (Recommended - NOW ENABLED BY DEFAULT)
 # ============================================================================
 # The new unified architecture provides:
 # - Single interface for all LLM providers
 # - Automatic fallback strategies
 # - Dynamic model selection
 # - Health checking
+# - Centralized YAML configuration
+#
+# Configuration is now loaded from config/llm_config.yaml
 #
 # To use the new architecture:
 # from utils.llm.unified_manager import UnifiedLLMManager
 # manager = UnifiedLLMManager()
-# client = manager.get_client("glm-4-flash")
-UNIFIED_LLM_CONFIG = {
-    # Enable/disable unified manager globally
-    "enabled": os.getenv("USE_UNIFIED_LLM", "false").lower() == "true",
+# client = manager.get_client(provider="zhipu", model="glm-4-flash")
 
-    # Text task default model
-    "default_text_model": os.getenv("DEFAULT_TEXT_MODEL", "glm-4-flash"),
+# Load defaults from YAML configuration
+try:
+    from config.yaml_config_loader import (
+        is_unified_manager_enabled,
+        get_default_model,
+        get_default_provider
+    )
 
-    # Vision task default model
-    "default_vision_model": os.getenv("DEFAULT_VISION_MODEL", "glm-4.6v"),
+    UNIFIED_LLM_CONFIG = {
+        # Enable/disable unified manager globally (now defaults to TRUE from YAML)
+        "enabled": is_unified_manager_enabled(),
 
-    # Enable fallback strategy
-    "enable_fallback": True,
+        # Text task default model (from YAML)
+        "default_text_model": get_default_model("text") or os.getenv("DEFAULT_TEXT_MODEL", "glm-4-flash"),
 
-    # Fallback retry attempts
-    "max_fallback_retries": 3,
+        # Vision task default model (from YAML)
+        "default_vision_model": get_default_model("vision") or os.getenv("DEFAULT_VISION_MODEL", "glm-4.6v"),
 
-    # Enable automatic health checking
-    "enable_health_check": True,
-}
+        # Text task default provider (from YAML)
+        "default_text_provider": get_default_provider("text") or os.getenv("DEFAULT_TEXT_PROVIDER", "zhipu"),
+
+        # Vision task default provider (from YAML)
+        "default_vision_provider": get_default_provider("vision") or os.getenv("DEFAULT_VISION_PROVIDER", "zhipu"),
+
+        # Enable fallback strategy
+        "enable_fallback": True,
+
+        # Fallback retry attempts
+        "max_fallback_retries": 3,
+
+        # Enable automatic health checking
+        "enable_health_check": True,
+    }
+except ImportError as e:
+    # Fallback if YAML loader is not available
+    import logging
+    logging.warning(f"Failed to load YAML configuration, using defaults: {e}")
+
+    UNIFIED_LLM_CONFIG = {
+        "enabled": os.getenv("USE_UNIFIED_LLM", "true").lower() == "true",  # Changed default to true
+        "default_text_model": os.getenv("DEFAULT_TEXT_MODEL", "deepseek-chat"),
+        "default_vision_model": os.getenv("DEFAULT_VISION_MODEL", "doubao-seed-1-6-vision-250815"),
+        "default_text_provider": os.getenv("DEFAULT_TEXT_PROVIDER", "deepseek"),
+        "default_vision_provider": os.getenv("DEFAULT_VISION_PROVIDER", "bytedance"),
+        "enable_fallback": True,
+        "max_fallback_retries": 3,
+        "enable_health_check": True,
+    }
 
 # ============================================================================
 # LEGACY: Individual LLM Configurations (Backward Compatible)

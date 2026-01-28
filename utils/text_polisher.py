@@ -40,19 +40,21 @@ class TextPolisher:
         self,
         api_key: Optional[str] = None,
         default_temperature: float = 0.3,
-        use_unified_manager: bool = False,
-        model_id: Optional[str] = None
+        use_unified_manager: bool = True,  # Changed default to True
+        model_id: Optional[str] = None,
+        provider: Optional[str] = None
     ):
         """
         Initialize TextPolisher
 
         Args:
-            api_key: DeepSeek API key (optional, uses config if not provided)
+            api_key: DeepSeek API key (optional, uses config if not provided) - legacy only
             default_temperature: Default temperature for LLM generation
-            use_unified_manager: Use new UnifiedLLMManager (recommended)
+            use_unified_manager: Use new UnifiedLLMManager (now default=True)
             model_id: Specific model ID to use (requires use_unified_manager=True)
+            provider: Specific provider ID to use (Provider-First API, requires use_unified_manager=True)
         """
-        self.provider = TEXT_LLM_PROVIDER
+        self.provider = provider or TEXT_LLM_PROVIDER
         self.use_unified_manager = use_unified_manager
         self.default_temperature = default_temperature
 
@@ -62,11 +64,12 @@ class TextPolisher:
             self.model_id = model_id
             self.llm_client = None  # Will use manager instead
 
-            # Get recommended models for polish task
+            # Get recommended providers for polish task
             self.recommendation = get_recommended_models("polish")
-            self.fallback_chain = self.recommendation["fallback"]
+            self.fallback_providers = self.recommendation.get("fallback_providers",
+                self.recommendation.get("fallback", ["deepseek"]))
 
-            logger.info(f"TextPolisher initialized with UnifiedLLMManager (fallback: {self.fallback_chain})")
+            logger.info(f"TextPolisher initialized with UnifiedLLMManager (default, provider: {provider}, fallback: {self.fallback_providers})")
         else:
             # Legacy implementation (backward compatible)
             config = TEXT_LLM_CONFIGS.get(self.provider, TEXT_LLM_CONFIGS.get("modelscope", {}))
@@ -98,11 +101,18 @@ class TextPolisher:
     def is_available(self) -> bool:
         """Check if polisher is available"""
         if self.use_unified_manager:
-            # Check if any model in fallback chain is available
-            for model_id in self.fallback_chain:
-                client = self.manager.get_client(model_id)
-                if client and client.is_available():
-                    return True
+            # Check if any provider in fallback chain is available
+            check_providers = [self.provider] if self.provider else self.fallback_providers
+            for provider_id in check_providers:
+                # Get provider info to determine default model
+                from utils.llm.provider_registry import ProviderRegistry
+                registry = ProviderRegistry()
+                provider_info = registry.get_provider(provider_id)
+                if provider_info and provider_info.models:
+                    model = provider_info.models[0]
+                    client = self.manager.get_client(provider=provider_id, model=model)
+                    if client and client.is_available():
+                        return True
             return False
         else:
             return self.llm_client is not None and self.llm_client.is_available()
@@ -129,15 +139,27 @@ class TextPolisher:
         temp = temperature if temperature is not None else self.default_temperature
 
         if self.use_unified_manager:
-            # Use UnifiedLLMManager with fallback
-            providers = [self.model_id] if self.model_id else self.fallback_chain
-            return self.manager.chat_with_fallback(
-                messages=messages,
-                providers=providers,
-                max_tokens=max_tokens,
-                temperature=temp,
-                retry_count=retry_count
-            )
+            # Use UnifiedLLMManager with provider-level fallback
+            if self.provider:
+                # Provider-First API: Use specific provider
+                return self.manager.chat_with_fallback(
+                    messages=messages,
+                    providers=[self.provider] + self.fallback_providers,
+                    model=self.model_id,
+                    max_tokens=max_tokens,
+                    temperature=temp,
+                    retry_count=retry_count
+                )
+            else:
+                # Legacy mode: Use fallback chain directly
+                providers = [self.model_id] if self.model_id else self.fallback_providers
+                return self.manager.chat_with_fallback(
+                    messages=messages,
+                    providers=providers,
+                    max_tokens=max_tokens,
+                    temperature=temp,
+                    retry_count=retry_count
+                )
         else:
             # Use legacy LLMClient
             return self.llm_client.chat_completion(

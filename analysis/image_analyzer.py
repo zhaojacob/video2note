@@ -43,16 +43,16 @@ class ImageAnalyzer:
         glm_config: Optional[Dict] = None,
         doubao_config: Optional[Dict] = None,
         allocation_config: Optional[Dict] = None,
-        use_unified_manager: bool = False
+        use_unified_manager: bool = True  # Changed default to True
     ):
         """
         Initialize image analyzer
 
         Args:
-            glm_config: GLM client configuration
-            doubao_config: Doubao client configuration
+            glm_config: GLM client configuration (legacy)
+            doubao_config: Doubao client configuration (legacy)
             allocation_config: API allocation strategy
-            use_unified_manager: Use new UnifiedLLMManager (recommended)
+            use_unified_manager: Use new UnifiedLLMManager (now default=True)
         """
         self.use_unified_manager = use_unified_manager
         self.allocation_config = allocation_config or API_ALLOCATION_CONFIG
@@ -69,7 +69,7 @@ class ImageAnalyzer:
             self.vision_chinese = get_recommended_models("vision_chinese")
             self.vision_general = get_recommended_models("vision_general")
 
-            logger.info("Initialized image analyzer with UnifiedLLMManager")
+            logger.info("Initialized image analyzer with UnifiedLLMManager (default)")
         else:
             # Legacy implementation (backward compatible)
             # Try to initialize GLM client (optional)
@@ -103,34 +103,34 @@ class ImageAnalyzer:
             analysis_type: Analysis type (auto/formula/code/chart/text/slide/general)
 
         Returns:
-            API name: 'glm' or 'doubao' (legacy) or model_id list (unified)
+            API name: 'glm' or 'doubao' (legacy) or provider_id list (unified)
         """
         if self.use_unified_manager:
-            # New implementation - return model ID list for fallback
+            # New implementation - return provider ID list for fallback
             content_type = frame.get("content_type", {})
 
             # Explicit analysis type
             if analysis_type in ["formula", "code"]:
-                return self.vision_formula["fallback"]
+                return self.vision_formula.get("fallback_providers", ["zhipu"])
             elif analysis_type == "chart":
-                return self.vision_code["fallback"]
+                return self.vision_code.get("fallback_providers", ["zhipu"])
             elif analysis_type in ["text", "slide"]:
-                return self.vision_chinese["fallback"]
+                return self.vision_chinese.get("fallback_providers", ["bytedance"])
 
             # Auto-detect based on content
             if content_type.get("has_formula") or content_type.get("has_code"):
-                return self.vision_formula["fallback"]
+                return self.vision_formula.get("fallback_providers", ["zhipu"])
 
             if content_type.get("has_text"):
                 text = content_type.get("text_content", "")
                 if self._is_chinese_dominant(text):
-                    return self.vision_chinese["fallback"]
+                    return self.vision_chinese.get("fallback_providers", ["bytedance"])
 
             if content_type.get("has_chart"):
-                return self.vision_code["fallback"]
+                return self.vision_code.get("fallback_providers", ["zhipu"])
 
             # Default: use general vision fallback
-            return self.vision_general["fallback"]
+            return self.vision_general.get("fallback_providers", ["zhipu", "bytedance"])
         else:
             # Legacy implementation
             # If GLM is not available, always use Doubao

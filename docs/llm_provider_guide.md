@@ -1,6 +1,564 @@
-# 如何指定LLM Provider
+# Provider-First LLM架构指南
 
-本文档详细说明如何在统一LLM架构中指定和切换不同的LLM提供商（Provider）。
+本文档详细说明如何在Provider-First架构中指定和切换不同的LLM提供商（Provider）。
+
+> **核心变化**：新架构中，Provider是一等实体。先选Provider，再选Model。多个Provider可以提供同名模型。
+
+---
+
+## 目录
+
+1. [架构概述](#架构概述)
+2. [快速开始](#快速开始)
+3. [Provider-First API](#provider-first-api)
+4. [配置Provider](#配置provider)
+5. [降级策略](#降级策略)
+6. [常见场景](#常见场景)
+7. [高级用法](#高级用法)
+8. [迁移指南](#迁移指南)
+
+---
+
+## 架构概述
+
+### 核心概念
+
+```
+Provider (提供商)
+    ↓
+ProviderInfo (提供商信息)
+    ├─ base_url (API地址)
+    ├─ api_key_env (密钥环境变量)
+    ├─ models: [...]  (支持的模型列表)
+    └─ capabilities: [...]  (能力列表)
+    ↓
+选择 Provider → 选择 Model → 创建客户端
+```
+
+### 为什么要Provider-First？
+
+**旧架构的问题**：
+- ❌ Model ID → Provider 硬编码映射（1:1）
+- ❌ 无法处理同名模型（多个provider提供`gpt-4`）
+- ❌ Provider只是字符串，不是实体
+
+**新架构的优势**：
+- ✅ Provider是独立实体，有自己的配置
+- ✅ 多个Provider可以提供同名模型
+- ✅ Provider级降级策略
+- ✅ 支持自定义Provider（代码 + 配置）
+- ✅ 完全向后兼容
+
+### 内置Provider
+
+| Provider ID | 名称 | 模型示例 | 能力 | 环境变量 |
+|-------------|------|----------|------|----------|
+| `zhipu` | 智谱AI | `glm-4-flash`, `glm-4.6v` | Text, Vision, Thinking | `GLM_API_KEY` |
+| `deepseek` | DeepSeek | `deepseek-chat` | Text, Long Context | `DEEPSEEK_API_KEY` |
+| `modelscope` | ModelScope | `deepseek-ai/DeepSeek-V3.2` | Text, Thinking | `MODELSCOPE_TOKEN` |
+| `openai` | OpenAI | `gpt-4o`, `gpt-4o-mini` | Text, Vision | `OPENAI_API_KEY` |
+| `bytedance` | 字节跳动 | `doubao-vision` | Vision, Bilingual | `ARK_API_KEY` |
+
+---
+
+## 快速开始
+
+### 1. 配置环境变量
+
+```bash
+# .env 文件
+
+# 启用统一LLM架构
+USE_UNIFIED_LLM=true
+
+# 按任务类型指定默认Provider
+DEFAULT_TEXT_PROVIDER=zhipu
+DEFAULT_VISION_PROVIDER=zhipu
+DEFAULT_THINKING_PROVIDER=modelscope
+
+# 指定默认模型（可选）
+DEFAULT_TEXT_MODEL=glm-4-flash
+DEFAULT_VISION_MODEL=glm-4.6v
+
+# 配置API密钥
+GLM_API_KEY=your_glm_api_key
+DEEPSEEK_API_KEY=your_deepseek_key
+MODELSCOPE_TOKEN=your_modelscope_token
+```
+
+### 2. 使用Provider-First API
+
+```python
+from utils.llm import UnifiedLLMManager
+
+manager = UnifiedLLMManager()
+
+# 新API：Provider-First
+client = manager.get_client(provider="zhipu", model="glm-4-flash")
+result = client.chat_completion([{"role": "user", "content": "Hello"}])
+```
+
+### 3. 使用Provider级降级
+
+```python
+# Provider级降级（跨provider）
+result = manager.chat_with_fallback(
+    messages=[{"role": "user", "content": "写一篇文章"}],
+    providers=["zhipu", "deepseek", "openai"]  # 按优先级尝试provider
+)
+```
+
+---
+
+## Provider-First API
+
+### 基础用法
+
+#### 获取客户端（推荐方式）
+
+```python
+from utils.llm import UnifiedLLMManager
+
+manager = UnifiedLLMManager()
+
+# 新API：Provider-First（推荐）
+client = manager.get_client(
+    provider="zhipu",      # 指定provider
+    model="glm-4-flash"    # 指定模型
+)
+
+# Legacy API（仍支持）
+client = manager.get_client("glm-4-flash")
+```
+
+#### 查询Provider信息
+
+```python
+from utils.llm import ProviderRegistry, ProviderCapability
+
+registry = ProviderRegistry()
+
+# 获取特定provider
+zhipu = registry.get_provider("zhipu")
+print(f"{zhipu.name}: {zhipu.models}")
+
+# 列出所有支持视觉的provider
+vision_providers = registry.list_providers(capability=ProviderCapability.VISION)
+for pid, info in vision_providers.items():
+    print(f"{info.name}: {info.models}")
+
+# 查找提供某模型的所有provider
+providers_for_gpt4 = registry.get_providers_for_model("gpt-4")
+for p in providers_for_gpt4:
+    print(f"{p.name}: {p.base_url}")
+```
+
+### TextPolisher（新增provider参数）
+
+```python
+from utils.text_polisher import TextPolisher
+
+# Provider-First方式
+polisher = TextPolisher(
+    use_unified_manager=True,
+    provider="zhipu",          # 指定provider
+    model_id="glm-4-flash"     # 指定模型
+)
+
+# Legacy方式（仍支持）
+polisher = TextPolisher(
+    use_unified_manager=True,
+    model_id="glm-4-flash"
+)
+```
+
+### ImageAnalyzer（Provider级选择）
+
+```python
+from analysis.image_analyzer import ImageAnalyzer
+
+# 启用统一管理器（自动使用provider级降级）
+analyzer = ImageAnalyzer(use_unified_manager=True)
+
+# 分析图像（自动选择provider）
+# 公式/代码 → ["zhipu", "bytedance"]
+# 中文文档 → ["bytedance", "zhipu"]
+result = analyzer.analyze_single(frame)
+```
+
+---
+
+## 配置Provider
+
+### 方式1：通过.env配置（最多10个）
+
+```bash
+# .env 文件
+
+# 自定义Provider 1: OpenAI兼容代理
+CUSTOM_PROVIDER_1_NAME=MyProxy
+CUSTOM_PROVIDER_1_BASE_URL=https://my-proxy.com/v1
+CUSTOM_PROVIDER_1_API_KEY=MY_PROXY_KEY
+CUSTOM_PROVIDER_1_MODELS=gpt-4,gpt-4o
+
+# 自定义Provider 2: 本地LLM (Ollama)
+CUSTOM_PROVIDER_2_NAME=LocalOllama
+CUSTOM_PROVIDER_2_BASE_URL=http://localhost:11434/v1
+CUSTOM_PROVIDER_2_API_KEY=ollama
+CUSTOM_PROVIDER_2_MODELS=llama3,mistral
+```
+
+### 方式2：通过代码注册
+
+```python
+from utils.llm import ProviderRegistry, ProviderInfo, ProviderCapability
+
+# 创建自定义provider
+custom_provider = ProviderInfo(
+    id="local-ollama",
+    name="Local Ollama",
+    base_url="http://localhost:11434/v1",
+    api_key_env="OLLAMA_API_KEY",
+    models=["llama3", "mistral", "codellama"],
+    capabilities=[ProviderCapability.TEXT, ProviderCapability.FAST],
+    timeout=120,
+    default_max_tokens=4096
+)
+
+# 注册到系统
+registry = ProviderRegistry()
+registry.register_custom_provider(custom_provider)
+
+# 使用
+from utils.llm import UnifiedLLMManager
+manager = UnifiedLLMManager()
+client = manager.get_client(provider="local-ollama", model="llama3")
+```
+
+---
+
+## 降级策略
+
+### Provider级降级（推荐）
+
+```python
+from utils.llm import UnifiedLLMManager
+
+manager = UnifiedLLMManager()
+
+# 按provider优先级降级
+result = manager.chat_with_fallback(
+    messages=[{"role": "user", "content": "写一篇文章"}],
+    providers=["zhipu", "deepseek", "openai"],  # Provider级降级
+    model="glm-4-flash"  # 可选：仅用于支持该模型的provider
+)
+```
+
+### 预定义降级链
+
+```python
+from config.llm_config import PROVIDER_FALLBACK_CHAINS
+
+# Provider级降级链
+PROVIDER_FALLBACK_CHAINS = {
+    "text": ["zhipu", "deepseek", "openai"],
+    "vision": ["zhipu", "bytedance", "openai"],
+    "thinking": ["modelscope", "zhipu", "deepseek"],
+}
+
+# 使用预定义降级链
+from utils.llm import UnifiedLLMManager
+
+manager = UnifiedLLMManager()
+result = manager.chat_with_fallback(
+    messages=[{"role": "user", "content": "Hello"}],
+    providers=PROVIDER_FALLBACK_CHAINS["text"]
+)
+```
+
+### 任务特定配置
+
+```python
+from config.llm_config import TASK_RECOMMENDATIONS
+
+# 获取任务推荐（包含provider和fallback）
+polish_config = TASK_RECOMMENDATIONS["polish"]
+# {
+#     "providers": ["zhipu", "deepseek"],
+#     "models": ["glm-4-flash", "deepseek-chat"],
+#     "fallback_providers": ["zhipu", "deepseek", "openai"],
+#     "reason": "Fast and cost-effective for text polishing"
+# }
+```
+
+---
+
+## 常见场景
+
+### 场景1：同名模型，不同Provider
+
+```python
+from utils.llm import UnifiedLLMManager
+
+manager = UnifiedLLMManager()
+
+# 使用OpenAI的GPT-4
+client1 = manager.get_client(provider="openai", model="gpt-4")
+result1 = client1.chat_completion([{"role": "user", "content": "Hello"}])
+
+# 使用自定义代理的GPT-4
+client2 = manager.get_client(provider="custom-my-proxy", model="gpt-4")
+result2 = client2.chat_completion([{"role": "user", "content": "Hello"}])
+```
+
+### 场景2：快速便宜（推荐）
+
+```python
+# 环境变量配置
+DEFAULT_TEXT_PROVIDER=zhipu
+DEFAULT_TEXT_MODEL=glm-4-flash
+
+# 或代码指定
+from utils.text_polisher import TextPolisher
+
+polisher = TextPolisher(
+    use_unified_manager=True,
+    provider="zhipu",
+    model_id="glm-4-flash"
+)
+```
+
+### 场景3：长文本处理
+
+```python
+# 使用ModelScope的DeepSeek V3（思维链）
+from utils.llm import UnifiedLLMManager
+
+manager = UnifiedLLMManager()
+
+result = manager.chat_with_fallback(
+    messages=[{"role": "user", "content": "长文本..."}],
+    providers=["modelscope", "deepseek", "zhipu"],  # 优先用思维链
+)
+```
+
+### 场景4：数学公式理解
+
+```python
+from utils.llm import UnifiedLLMManager
+
+manager = UnifiedLLMManager()
+
+# 公式识别：GLM优先
+result = manager.analyze_image_with_fallback(
+    image_path="formula.jpg",
+    prompt="识别并解释这个数学公式",
+    providers=["zhipu", "bytedance", "openai"]
+)
+```
+
+### 场景5：中文文档理解
+
+```python
+from utils.llm import UnifiedLLMManager
+
+manager = UnifiedLLMManager()
+
+# 中文文档：Doubao优先
+result = manager.analyze_image_with_fallback(
+    image_path="slide.jpg",
+    prompt="提取这张PPT的内容",
+    providers=["bytedance", "zhipu"]
+)
+```
+
+### 场景6：成本优化
+
+```python
+from utils.llm import UnifiedLLMManager
+
+manager = UnifiedLLMManager()
+
+# 按成本排序的provider级降级
+cost_optimized_chain = [
+    "zhipu",      # 智谱：几乎免费
+    "deepseek",   # DeepSeek: 1元/M tokens
+    "openai"      # OpenAI: 最贵
+]
+
+result = manager.chat_with_fallback(
+    messages=[{"role": "user", "content": "Long text..."}],
+    providers=cost_optimized_chain
+)
+```
+
+---
+
+## 高级用法
+
+### 查询Provider能力
+
+```python
+from utils.llm import ProviderRegistry, ProviderCapability
+
+registry = ProviderRegistry()
+
+# 列出所有支持思维链的provider
+thinking_providers = registry.list_providers(capability=ProviderCapability.THINKING)
+for pid, info in thinking_providers.items():
+    print(f"{info.name}: {info.models}")
+
+# 检查provider是否支持某能力
+zhipu = registry.get_provider("zhipu")
+if zhipu.supports_capability(ProviderCapability.VISION):
+    print("Zhipu supports vision!")
+
+# 检查provider是否提供某模型
+if zhipu.has_model("glm-4.6v"):
+    print("Zhipu provides glm-4.6v!")
+```
+
+### 列出可用Provider
+
+```python
+from utils.llm import UnifiedLLMManager
+
+manager = UnifiedLLMManager()
+
+# 列出所有已配置API密钥的provider
+available_providers = manager.list_available_providers()
+print("Available providers:", list(available_providers.keys()))
+
+# 按能力筛选
+from utils.llm import ModelCapability
+
+vision_providers = manager.list_available_providers(capability=ModelCapability.VISION)
+print("Vision providers:", list(vision_providers.keys()))
+```
+
+### 动态Provider选择
+
+```python
+from utils.llm import ProviderRegistry
+
+def select_provider_by_content(content_type: dict) -> str:
+    """根据内容类型智能选择Provider"""
+    registry = ProviderRegistry()
+
+    if content_type.get("has_formula") or content_type.get("has_code"):
+        return "zhipu"  # GLM擅长公式和代码
+
+    if content_type.get("has_text"):
+        text = content_type.get("text_content", "")
+        chinese_ratio = sum(1 for c in text if '\u4e00' <= c <= '\u9fff') / len(text)
+        if chinese_ratio > 0.3:
+            return "bytedance"  # Doubao擅长中文
+
+    return "zhipu"  # 默认
+```
+
+---
+
+## 迁移指南
+
+### 从旧API迁移到Provider-First API
+
+#### 变更1：获取客户端
+
+**旧代码**：
+```python
+client = manager.get_client("glm-4-flash")
+```
+
+**新代码（推荐）**：
+```python
+client = manager.get_client(provider="zhipu", model="glm-4-flash")
+```
+
+**兼容性**：旧代码仍可继续使用！
+
+#### 变更2：降级策略
+
+**旧代码**（模型级）：
+```python
+result = manager.chat_with_fallback(
+    messages=[...],
+    providers=["glm-4-flash", "deepseek-chat", "gpt-4o-mini"]
+)
+```
+
+**新代码**（Provider级）：
+```python
+result = manager.chat_with_fallback(
+    messages=[...],
+    providers=["zhipu", "deepseek", "openai"],  # Provider ID
+    model="glm-4-flash"  # 可选模型名称
+)
+```
+
+#### 变更3：TextPolisher
+
+**旧代码**：
+```python
+polisher = TextPolisher(
+    use_unified_manager=True,
+    model_id="glm-4-flash"
+)
+```
+
+**新代码（推荐）**：
+```python
+polisher = TextPolisher(
+    use_unified_manager=True,
+    provider="zhipu",
+    model_id="glm-4-flash"
+)
+```
+
+### 迁移检查清单
+
+- [ ] 更新环境变量：添加 `DEFAULT_TEXT_PROVIDER`、`DEFAULT_VISION_PROVIDER`
+- [ ] 更新降级策略配置：使用Provider ID而非Model ID
+- [ ] 可选：更新代码使用Provider-First API
+- [ ] 测试：验证所有功能正常工作
+
+---
+
+## 总结
+
+### Provider-First架构优势
+
+| 特性 | 旧架构 | 新架构 |
+|------|--------|--------|
+| Provider实体 | 字符串 | 一等实体（ProviderInfo） |
+| 同名模型 | ❌ 不支持 | ✅ 支持 |
+| 降级策略 | 模型级 | Provider级 |
+| 自定义Provider | 仅代码 | 代码 + .env配置 |
+| 配置灵活性 | 受限 | 高度灵活 |
+
+### 推荐配置
+
+```bash
+# .env 文件
+
+USE_UNIFIED_LLM=true
+
+# Provider默认
+DEFAULT_TEXT_PROVIDER=zhipu
+DEFAULT_VISION_PROVIDER=zhipu
+DEFAULT_THINKING_PROVIDER=modelscope
+
+# 模型默认（可选）
+DEFAULT_TEXT_MODEL=glm-4-flash
+DEFAULT_VISION_MODEL=glm-4.6v
+
+# API密钥
+GLM_API_KEY=your_glm_key
+DEEPSEEK_API_KEY=your_deepseek_key
+MODELSCOPE_TOKEN=your_modelscope_token
+```
+
+配置完成后，系统自动处理Provider选择、降级和错误恢复！
 
 ---
 

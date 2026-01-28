@@ -6,6 +6,8 @@ fallback chains for the UnifiedLLMManager.
 
 The new architecture prioritizes providers first, then models within each provider.
 
+Configuration is now loaded from config/llm_config.yaml for centralized management.
+
 Usage:
 ```python
 from utils.llm import UnifiedLLMManager
@@ -25,99 +27,62 @@ result = manager.chat_with_fallback(
 ```
 """
 
-# Provider-level fallback chains (by task type)
-# These define the order in which providers are tried for each task type
-PROVIDER_FALLBACK_CHAINS = {
+# Import YAML configuration loader
+from config.yaml_config_loader import (
+    load_llm_config,
+    get_task_recommendation,
+    get_fallback_chain as get_yaml_fallback_chain,
+    get_cost_reference as get_yaml_cost_reference,
+    list_all_models
+)
+
+# Load configuration from YAML
+_config = load_llm_config()
+
+# Provider-level fallback chains (loaded from YAML)
+PROVIDER_FALLBACK_CHAINS = _config.get("fallback_chains", {
     "text": ["zhipu", "deepseek", "openai"],
     "vision": ["zhipu", "bytedance", "openai"],
     "thinking": ["modelscope", "zhipu", "deepseek"],
     "bilingual": ["zhipu", "bytedance", "deepseek"],
-}
+})
 
-# Task recommendations (provider-aware)
-TASK_RECOMMENDATIONS = {
-    "polish": {
-        "providers": ["zhipu", "deepseek"],
-        "models": ["glm-4-flash", "deepseek-chat"],
-        "fallback_providers": PROVIDER_FALLBACK_CHAINS["text"],
-        "reason": "Fast, cost-effective for text polishing"
-    },
-    "vision_formula": {
-        "providers": ["zhipu"],
-        "models": ["glm-4.6v"],
-        "fallback_providers": ["bytedance"],
-        "reason": "GLM excels at mathematical formulas and code"
-    },
-    "vision_code": {
-        "providers": ["zhipu"],
-        "models": ["glm-4.6v"],
-        "fallback_providers": ["bytedance"],
-        "reason": "GLM has strong code understanding capabilities"
-    },
-    "vision_chinese": {
-        "providers": ["bytedance"],
-        "models": ["doubao-vision"],
-        "fallback_providers": ["zhipu"],
-        "reason": "Doubao excels at Chinese document understanding"
-    },
-    "vision_general": {
-        "providers": ["zhipu", "bytedance"],
-        "models": ["glm-4.6v", "doubao-vision"],
-        "fallback_providers": PROVIDER_FALLBACK_CHAINS["vision"],
-        "reason": "Load balancing for general vision tasks"
-    },
-    "summarize": {
-        "providers": ["modelscope", "deepseek"],
-        "models": ["deepseek-reasoner", "deepseek-chat"],
-        "fallback_providers": PROVIDER_FALLBACK_CHAINS["text"],
-        "reason": "Long context and thinking capabilities"
-    },
-    "translate": {
-        "providers": ["zhipu", "deepseek"],
-        "models": ["glm-4-flash", "deepseek-chat"],
-        "fallback_providers": PROVIDER_FALLBACK_CHAINS["text"],
-        "reason": "Strong bilingual support"
-    },
-}
+# Task recommendations (loaded from YAML)
+TASK_RECOMMENDATIONS = _config.get("task_recommendations", {})
 
 # Legacy compatibility - Model-level fallback chains (deprecated)
 # These are maintained for backward compatibility but should not be used in new code
 FALLBACK_CHAINS = {
-    "text": ["glm-4-flash", "deepseek-chat", "gpt-4o-mini"],
-    "vision": ["glm-4.6v", "doubao-vision", "gpt-4o"],
-    "thinking": ["deepseek-reasoner", "glm-4.6v"],
+    "text": ["deepseek-chat", "deepseek-reasoner"],
+    "vision": ["doubao-vision"],
+    "thinking": ["deepseek-reasoner"],
 }
 
-# Recommended model configurations (for quick start)
-RECOMMENDED_TEXT_MODELS = [
-    "glm-4-flash",        # Fast, high free tier, excellent Chinese
-    "deepseek-chat",      # Cheap, long context, non-thinking
-    "deepseek-reasoner",  # Thinking mode for complex reasoning
-    "gpt-4o-mini",        # Fast, multi-language
-]
+# Recommended model configurations (loaded from YAML)
+_all_models = list_all_models()
 
-RECOMMENDED_VISION_MODELS = [
-    "glm-4.6v",         # Thinking chain, strong formula/code understanding
-    "doubao-vision",    # Strong Chinese document understanding
-    "gpt-4o",           # Strong general vision capabilities
-]
+RECOMMENDED_TEXT_MODELS = []
+RECOMMENDED_VISION_MODELS = []
+RECOMMENDED_THINKING_MODELS = []
 
-# Thinking models (for complex reasoning tasks)
-RECOMMENDED_THINKING_MODELS = [
-    "deepseek-reasoner",  # DeepSeek reasoning mode (via DeepSeek API)
-    "glm-4.6v",          # GLM with thinking chain
-]
+for provider_id, models in _all_models.items():
+    provider_config = _config["providers"].get(provider_id, {})
+    capabilities = provider_config.get("capabilities", [])
 
-# Cost per 1M tokens (approximate, for reference)
-COST_REFERENCE = {
-    "glm-4-flash": {"input": 0.1, "output": 0.1, "currency": "CNY"},
-    "glm-4.6v": {"input": 0.1, "output": 0.1, "currency": "CNY"},
-    "deepseek-chat": {"input": 1.0, "output": 2.0, "currency": "CNY"},
-    "deepseek-reasoner": {"input": 1.0, "output": 2.0, "currency": "CNY"},
-    "doubao-vision": {"input": 0.5, "output": 1.0, "currency": "CNY"},
-    "gpt-4o": {"input": 2.5, "output": 10.0, "currency": "USD"},
-    "gpt-4o-mini": {"input": 0.15, "output": 0.6, "currency": "USD"},
-}
+    if "text" in capabilities:
+        RECOMMENDED_TEXT_MODELS.extend(models)
+    if "vision" in capabilities:
+        RECOMMENDED_VISION_MODELS.extend(models)
+    if "thinking" in capabilities:
+        RECOMMENDED_THINKING_MODELS.extend(models)
+
+# Remove duplicates while preserving order
+RECOMMENDED_TEXT_MODELS = list(dict.fromkeys(RECOMMENDED_TEXT_MODELS))
+RECOMMENDED_VISION_MODELS = list(dict.fromkeys(RECOMMENDED_VISION_MODELS))
+RECOMMENDED_THINKING_MODELS = list(dict.fromkeys(RECOMMENDED_THINKING_MODELS))
+
+# Cost reference (loaded from YAML)
+COST_REFERENCE = _config.get("cost_reference", {})
 
 
 def get_recommended_models(task_type: str) -> dict:
@@ -130,11 +95,17 @@ def get_recommended_models(task_type: str) -> dict:
     Returns:
         Dictionary with models, fallback, and reason
     """
-    return TASK_RECOMMENDATIONS.get(task_type, {
-        "models": RECOMMENDED_TEXT_MODELS,
-        "fallback": FALLBACK_CHAINS["text"],
+    recommendation = get_task_recommendation(task_type)
+    if recommendation:
+        return recommendation
+
+    # Fallback to default
+    return {
+        "providers": ["deepseek"],
+        "models": RECOMMENDED_TEXT_MODELS[:2] if RECOMMENDED_TEXT_MODELS else ["deepseek-chat"],
+        "fallback_providers": PROVIDER_FALLBACK_CHAINS.get("text", ["deepseek"]),
         "reason": "General purpose text task"
-    })
+    }
 
 
 def get_fallback_chain(task_type: str) -> list:
@@ -145,9 +116,16 @@ def get_fallback_chain(task_type: str) -> list:
         task_type: Task type (text, vision, thinking)
 
     Returns:
-        List of model IDs in priority order
+        List of model IDs in priority order (legacy) or provider IDs (new)
     """
+    # Try to get from YAML first (provider-level)
+    yaml_chain = get_yaml_fallback_chain(task_type)
+    if yaml_chain:
+        return yaml_chain
+
+    # Fallback to legacy model-level chains
     return FALLBACK_CHAINS.get(task_type, FALLBACK_CHAINS["text"])
+
 
 
 def list_all_vision_models() -> list:

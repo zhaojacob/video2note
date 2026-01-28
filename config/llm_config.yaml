@@ -1,0 +1,205 @@
+# ============================================================================
+# LLM 统一配置文件
+# ============================================================================
+# 版本: 1.0
+# 说明: 此文件包含所有 LLM 服务商、模型、任务推荐和降级策略的配置
+# 安全: API Keys 仍然存储在 .env 文件中，此文件只包含结构化配置
+# ============================================================================
+
+version: "1.0"
+
+# ============================================================================
+# 默认设置
+# ============================================================================
+defaults:
+  # 文本任务默认 provider 和模型
+  text_provider: "deepseek"
+  text_model: "deepseek-chat"
+  
+  # 视觉任务默认 provider 和模型
+  vision_provider: "bytedance"
+  vision_model: "doubao-seed-1-6-vision-250815"
+  
+  # 思考/推理任务默认 provider
+  thinking_provider: "deepseek"
+  
+  # 是否启用统一管理器（推荐设置为 true）
+  use_unified_manager: true
+
+# ============================================================================
+# Provider 配置
+# ============================================================================
+# 每个 provider 代表一个 LLM 服务商（如字节跳动、DeepSeek等）
+# ============================================================================
+providers:
+  # 字节跳动豆包
+  bytedance:
+    name: "字节跳动豆包"
+    api_key_env: "ARK_API_KEY"
+    base_url: "https://ark.cn-beijing.volces.com/api/v3"
+    timeout: 300
+    default_max_tokens: 1000
+    models:
+      - "doubao-seed-1-6-vision-250815"
+    capabilities:
+      - "vision"
+      - "bilingual"
+    supports_async: true
+    requires_extra_body: false
+    # 豆包使用特殊的 API 格式
+    use_responses_api: true
+  
+  # DeepSeek
+  deepseek:
+    name: "DeepSeek"
+    api_key_env: "DEEPSEEK_API_KEY"
+    base_url: "https://api.deepseek.com"
+    timeout: 60
+    default_max_tokens: 8192
+    models:
+      - "deepseek-chat"
+      - "deepseek-reasoner"
+    capabilities:
+      - "text"
+      - "thinking"
+      - "long_context"
+      - "fast"
+    supports_async: true
+    requires_extra_body: false
+
+# ============================================================================
+# 任务推荐配置
+# ============================================================================
+# 为不同类型的任务推荐最合适的 provider 和模型
+# ============================================================================
+task_recommendations:
+  # 文本润色
+  polish:
+    providers:
+      - "deepseek"
+    models:
+      - "deepseek-chat"
+    reason: "快速、成本低，适合文本润色"
+  
+  # 数学公式识别
+  vision_formula:
+    providers:
+      - "bytedance"
+    models:
+      - "doubao-seed-1-6-vision-250815"
+    fallback_providers:
+      - "bytedance"
+    reason: "豆包视觉模型支持公式识别"
+  
+  # 代码识别
+  vision_code:
+    providers:
+      - "bytedance"
+    models:
+      - "doubao-seed-1-6-vision-250815"
+    fallback_providers:
+      - "bytedance"
+    reason: "豆包视觉模型支持代码识别"
+  
+  # 中文文档理解
+  vision_chinese:
+    providers:
+      - "bytedance"
+    models:
+      - "doubao-seed-1-6-vision-250815"
+    fallback_providers:
+      - "bytedance"
+    reason: "豆包在中文文档理解方面表现优秀"
+  
+  # 通用视觉任务
+  vision_general:
+    providers:
+      - "bytedance"
+    models:
+      - "doubao-seed-1-6-vision-250815"
+    fallback_providers:
+      - "bytedance"
+    reason: "豆包视觉模型支持通用视觉任务"
+  
+  # 摘要生成
+  summarize:
+    providers:
+      - "deepseek"
+    models:
+      - "deepseek-reasoner"
+      - "deepseek-chat"
+    fallback_providers:
+      - "deepseek"
+    reason: "长上下文和推理能力"
+  
+  # 翻译
+  translate:
+    providers:
+      - "deepseek"
+    models:
+      - "deepseek-chat"
+    fallback_providers:
+      - "deepseek"
+    reason: "强大的双语支持"
+
+# ============================================================================
+# Fallback 策略
+# ============================================================================
+# 定义不同任务类型的 provider 降级顺序
+# ============================================================================
+fallback_chains:
+  text:
+    - "deepseek"
+  
+  vision:
+    - "bytedance"
+  
+  thinking:
+    - "deepseek"
+  
+  bilingual:
+    - "deepseek"
+    - "bytedance"
+
+# ============================================================================
+# 并发和重试配置
+# ============================================================================
+concurrency:
+  # 最大并发请求数
+  max_concurrent: 5
+  
+  # 是否启用断点续传
+  enable_checkpoint: true
+  
+  # 断点文件存储目录
+  checkpoint_dir: "output/checkpoints"
+  
+  # 最大重试次数
+  max_retries: 3
+  
+  # 重试延迟（秒）
+  retry_delay: 2
+  
+  # 指数退避
+  exponential_backoff: true
+
+# ============================================================================
+# 成本参考（每百万 tokens）
+# ============================================================================
+# 仅供参考，实际价格以服务商官网为准
+# ============================================================================
+cost_reference:
+  deepseek-chat:
+    input: 1.0
+    output: 2.0
+    currency: "CNY"
+  
+  deepseek-reasoner:
+    input: 1.0
+    output: 2.0
+    currency: "CNY"
+  
+  doubao-seed-1-6-vision-250815:
+    input: 0.5
+    output: 1.0
+    currency: "CNY"

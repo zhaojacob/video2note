@@ -62,6 +62,7 @@ class ProviderInfo:
     requires_extra_body: bool = False
     extra_body_params: Optional[Dict] = None
     model_aliases: Optional[Dict[str, str]] = None  # Alias -> real model name mapping
+    use_responses_api: bool = False  # 是否使用 responses.create() API (豆包专用)
 
     def get_api_key(self) -> Optional[str]:
         """Get API key from environment variables"""
@@ -92,88 +93,87 @@ class ProviderInfo:
         return model
 
 
-# Built-in providers
-BUILTIN_PROVIDERS: Dict[str, ProviderInfo] = {
-    "zhipu": ProviderInfo(
-        id="zhipu",
-        name="智谱AI (GLM)",
-        base_url="https://open.bigmodel.cn/api/paas/v4/chat/completions",
-        api_key_env="GLM_API_KEY",
-        models=["glm-4-flash", "glm-4.6v", "glm-4"],
-        capabilities=[
-            ProviderCapability.TEXT,
-            ProviderCapability.VISION,
-            ProviderCapability.THINKING,
-            ProviderCapability.BILINGUAL,
-            ProviderCapability.FAST
-        ],
-        timeout=60,
-        default_max_tokens=8192
-    ),
+# Built-in providers - now loaded from YAML configuration
+def _load_builtin_providers() -> Dict[str, ProviderInfo]:
+    """
+    Load built-in providers from YAML configuration
 
-    "openai": ProviderInfo(
-        id="openai",
-        name="OpenAI",
-        base_url="https://api.openai.com/v1",
-        api_key_env="OPENAI_API_KEY",
-        models=["gpt-4o", "gpt-4o-mini", "gpt-4"],
-        capabilities=[
-            ProviderCapability.TEXT,
-            ProviderCapability.VISION,
-            ProviderCapability.FAST
-        ],
-        timeout=60,
-        default_max_tokens=4096
-    ),
+    Returns:
+        Dictionary of {provider_id: ProviderInfo}
+    """
+    try:
+        from config.yaml_config_loader import get_all_providers as get_yaml_providers
 
-    "deepseek": ProviderInfo(
-        id="deepseek",
-        name="DeepSeek",
-        base_url="https://api.deepseek.com",
-        api_key_env="DEEPSEEK_API_KEY",
-        models=["deepseek-chat", "deepseek-reasoner"],  # chat=非思考模式, reasoner=思考模式
-        capabilities=[
-            ProviderCapability.TEXT,
-            ProviderCapability.LONG_CONTEXT,
-            ProviderCapability.THINKING,
-            ProviderCapability.FAST
-        ],
-        timeout=60,
-        default_max_tokens=8192
-    ),
+        yaml_providers = get_yaml_providers()
+        builtin = {}
 
-    "modelscope": ProviderInfo(
-        id="modelscope",
-        name="ModelScope",
-        base_url="https://api-inference.modelscope.cn/v1",
-        api_key_env="MODELSCOPE_TOKEN",
-        models=["deepseek-reasoner"],  # 使用与 DeepSeek API 兼容的名称
-        model_aliases={"deepseek-reasoner": "deepseek-ai/DeepSeek-V3.2"},  # 别名映射到真实模型名称
-        capabilities=[
-            ProviderCapability.TEXT,
-            ProviderCapability.THINKING,
-            ProviderCapability.LONG_CONTEXT
-        ],
-        timeout=600,
-        default_max_tokens=8192,
-        requires_extra_body=True,
-        extra_body_params={"enable_thinking": True}
-    ),
+        for provider_id, yaml_config in yaml_providers.items():
+            # Convert capability strings to ProviderCapability enums
+            capabilities = []
+            for cap_str in yaml_config.capabilities:
+                try:
+                    capabilities.append(ProviderCapability(cap_str))
+                except ValueError:
+                    pass  # Skip unknown capabilities
 
-    "bytedance": ProviderInfo(
-        id="bytedance",
-        name="字节跳动 (Doubao)",
-        base_url="https://ark.cn-beijing.volces.com/api/v3",
-        api_key_env="ARK_API_KEY",
-        models=["doubao-vision"],
-        capabilities=[
-            ProviderCapability.VISION,
-            ProviderCapability.BILINGUAL
-        ],
-        timeout=300,
-        default_max_tokens=1000
-    )
-}
+            builtin[provider_id] = ProviderInfo(
+                id=yaml_config.id,
+                name=yaml_config.name,
+                base_url=yaml_config.base_url,
+                api_key_env=yaml_config.api_key_env,
+                models=yaml_config.models,
+                capabilities=capabilities,
+                timeout=yaml_config.timeout,
+                default_max_tokens=yaml_config.default_max_tokens,
+                supports_async=yaml_config.supports_async,
+                requires_extra_body=yaml_config.requires_extra_body,
+                extra_body_params=yaml_config.extra_body,
+                model_aliases=yaml_config.model_aliases,
+                use_responses_api=getattr(yaml_config, 'use_responses_api', False)
+            )
+
+        return builtin
+
+    except Exception as e:
+        # Fallback to hardcoded providers if YAML loading fails
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Failed to load providers from YAML, using fallback: {e}")
+
+        return {
+            "bytedance": ProviderInfo(
+                id="bytedance",
+                name="字节跳动 (Doubao)",
+                base_url="https://ark.cn-beijing.volces.com/api/v3",
+                api_key_env="ARK_API_KEY",
+                models=["doubao-vision"],
+                capabilities=[
+                    ProviderCapability.VISION,
+                    ProviderCapability.BILINGUAL
+                ],
+                timeout=300,
+                default_max_tokens=1000
+            ),
+            "deepseek": ProviderInfo(
+                id="deepseek",
+                name="DeepSeek",
+                base_url="https://api.deepseek.com",
+                api_key_env="DEEPSEEK_API_KEY",
+                models=["deepseek-chat", "deepseek-reasoner"],
+                capabilities=[
+                    ProviderCapability.TEXT,
+                    ProviderCapability.LONG_CONTEXT,
+                    ProviderCapability.THINKING,
+                    ProviderCapability.FAST
+                ],
+                timeout=60,
+                default_max_tokens=8192
+            )
+        }
+
+
+# Load providers from YAML
+BUILTIN_PROVIDERS: Dict[str, ProviderInfo] = _load_builtin_providers()
 
 
 class ProviderRegistry:
