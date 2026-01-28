@@ -19,71 +19,125 @@ class ModelCapability(Enum):
 
 @dataclass
 class ModelInfo:
-    """模型信息"""
+    """
+    模型信息 (Provider-Aware)
+
+    Note: This is being refactored to use provider_id instead of hardcoded provider info.
+    Legacy properties (provider, env_key, api_base) are maintained for backward compatibility.
+    """
     name: str  # 模型显示名称
-    provider: str  # 提供商
-    api_base: str  # API base URL
-    default_max_tokens: int  # 默认最大tokens
+    provider_id: str  # Provider ID (references ProviderRegistry)
     capabilities: List[ModelCapability]  # 能力列表
-    env_key: str  # 环境变量key
     timeout: int = 60
+    default_max_tokens: int = 4096
     supports_async: bool = True
     requires_extra_body: bool = False
     extra_body_params: Optional[Dict[str, Any]] = None
 
+    # Legacy properties (for backward compatibility)
+    @property
+    def provider(self) -> str:
+        """Legacy: Return provider_id"""
+        return self.provider_id
 
-# 预定义模型库
+    @property
+    def env_key(self) -> str:
+        """Legacy: Get env_key from ProviderRegistry"""
+        try:
+            from .provider_registry import ProviderRegistry
+            registry = ProviderRegistry()
+            provider = registry.get_provider(self.provider_id)
+            return provider.api_key_env if provider else ""
+        except Exception:
+            # Fallback for legacy code that doesn't have ProviderRegistry
+            return self._get_legacy_env_key()
+
+    @property
+    def api_base(self) -> str:
+        """Legacy: Get base_url from ProviderRegistry"""
+        try:
+            from .provider_registry import ProviderRegistry
+            registry = ProviderRegistry()
+            provider = registry.get_provider(self.provider_id)
+            return provider.base_url if provider else ""
+        except Exception:
+            # Fallback for legacy code
+            return self._get_legacy_api_base()
+
+    def _get_legacy_env_key(self) -> str:
+        """Fallback env_key mapping for legacy code"""
+        legacy_map = {
+            "zhipu": "GLM_API_KEY",
+            "openai": "OPENAI_API_KEY",
+            "deepseek": "DEEPSEEK_API_KEY",
+            "modelscope": "MODELSCOPE_TOKEN",
+            "bytedance": "ARK_API_KEY",
+        }
+        return legacy_map.get(self.provider_id, "")
+
+    def _get_legacy_api_base(self) -> str:
+        """Fallback api_base mapping for legacy code"""
+        legacy_map = {
+            "zhipu": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            "openai": "https://api.openai.com/v1",
+            "deepseek": "https://api.deepseek.com",
+            "modelscope": "https://api-inference.modelscope.cn/v1",
+            "bytedance": "https://ark.cn-beijing.volces.com/api/v3",
+        }
+        return legacy_map.get(self.provider_id, "")
+
+
+# 预定义模型库 (Provider-Aware)
 BUILTIN_MODELS: Dict[str, ModelInfo] = {
     # GLM系列
     "glm-4.6v": ModelInfo(
         name="GLM-4.6V",
-        provider="zhipu",
-        api_base="https://open.bigmodel.cn/api/paas/v4/chat/completions",
+        provider_id="zhipu",
         default_max_tokens=1000,
         capabilities=[ModelCapability.VISION, ModelCapability.THINKING, ModelCapability.LONG_CONTEXT],
-        env_key="GLM_API_KEY",
         timeout=60,
     ),
 
     "glm-4-flash": ModelInfo(
         name="GLM-4 Flash",
-        provider="zhipu",
-        api_base="https://open.bigmodel.cn/api/paas/v4/chat/completions",
+        provider_id="zhipu",
         default_max_tokens=8192,
         capabilities=[ModelCapability.TEXT, ModelCapability.FAST, ModelCapability.BILINGUAL],
-        env_key="GLM_API_KEY",
         timeout=30,
     ),
 
     # Doubao系列
     "doubao-vision": ModelInfo(
         name="Doubao Vision",
-        provider="bytedance",
-        api_base="https://ark.cn-beijing.volces.com/api/v3",
+        provider_id="bytedance",
         default_max_tokens=1000,
         capabilities=[ModelCapability.VISION, ModelCapability.BILINGUAL],
-        env_key="ARK_API_KEY",
         timeout=300,
     ),
 
     # DeepSeek系列
     "deepseek-chat": ModelInfo(
         name="DeepSeek Chat",
-        provider="deepseek",
-        api_base="https://api.deepseek.com",
+        provider_id="deepseek",
         default_max_tokens=8192,
         capabilities=[ModelCapability.TEXT, ModelCapability.LONG_CONTEXT, ModelCapability.FAST],
-        env_key="DEEPSEEK_API_KEY",
         timeout=60,
     ),
 
-    "deepseek-v3": ModelInfo(
-        name="DeepSeek V3 (via ModelScope)",
-        provider="modelscope",
-        api_base="https://api-inference.modelscope.cn/v1",
+    "deepseek-reasoner": ModelInfo(
+        name="DeepSeek Reasoner (Thinking Mode)",
+        provider_id="deepseek",
         default_max_tokens=8192,
         capabilities=[ModelCapability.TEXT, ModelCapability.THINKING, ModelCapability.LONG_CONTEXT],
-        env_key="MODELSCOPE_TOKEN",
+        timeout=60,
+    ),
+
+    # ModelScope 系列（通过 ModelScope API 访问 DeepSeek V3）
+    "deepseek-reasoner-ms": ModelInfo(
+        name="DeepSeek V3 (via ModelScope)",
+        provider_id="modelscope",
+        default_max_tokens=8192,
+        capabilities=[ModelCapability.TEXT, ModelCapability.THINKING, ModelCapability.LONG_CONTEXT],
         timeout=600,
         requires_extra_body=True,
         extra_body_params={"enable_thinking": True},
@@ -92,21 +146,17 @@ BUILTIN_MODELS: Dict[str, ModelInfo] = {
     # OpenAI系列（预留）
     "gpt-4o": ModelInfo(
         name="GPT-4o",
-        provider="openai",
-        api_base="https://api.openai.com/v1",
+        provider_id="openai",
         default_max_tokens=4096,
         capabilities=[ModelCapability.TEXT, ModelCapability.VISION],
-        env_key="OPENAI_API_KEY",
         timeout=60,
     ),
 
     "gpt-4o-mini": ModelInfo(
         name="GPT-4o Mini",
-        provider="openai",
-        api_base="https://api.openai.com/v1",
+        provider_id="openai",
         default_max_tokens=4096,
         capabilities=[ModelCapability.TEXT, ModelCapability.VISION, ModelCapability.FAST],
-        env_key="OPENAI_API_KEY",
         timeout=30,
     ),
 }

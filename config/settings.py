@@ -63,16 +63,16 @@ GLM_CONFIG = {
 # Doubao configuration (OpenAI-compatible API)
 DOUBAO_CONFIG = {
     "api_key": os.getenv("ARK_API_KEY", ""),
-    "model": "doubao-seed-1-6-vision-250815",  # Updated model name
+    "model": "doubao-vision",  # 统一使用 provider_registry.py 中的名称
     "base_url": "https://ark.cn-beijing.volces.com/api/v3",  # Base URL without /chat/completions
     "timeout": 300,
-#    "max_tokens": 1000,
+    "max_tokens": 1000,
 }
 
 # ModelScope configuration (text LLM default)
 MODELSCOPE_CONFIG = {
     "api_key": os.getenv("MODELSCOPE_TOKEN", ""),
-    "model": "deepseek-ai/DeepSeek-V3.2",
+    "model": "deepseek-reasoner",  # 使用与 DeepSeek API 兼容的名称（会自动映射到 deepseek-ai/DeepSeek-V3.2）
     "base_url": "https://api-inference.modelscope.cn/v1",
     "max_tokens": 8192,
     "thinking": True,
@@ -111,6 +111,22 @@ TEXT_LLM_PROVIDER = os.getenv("TEXT_LLM_PROVIDER", "modelscope")
 TEXT_LLM_CONFIGS = {
     "modelscope": MODELSCOPE_CONFIG,
     "deepseek": DEEPSEEK_CONFIG,
+}
+
+# ============================================================================
+# PROVIDER-FIRST ARCHITECTURE (NEW)
+# ============================================================================
+# Provider defaults by task type
+PROVIDER_DEFAULTS = {
+    "text": os.getenv("DEFAULT_TEXT_PROVIDER", "zhipu"),
+    "vision": os.getenv("DEFAULT_VISION_PROVIDER", "zhipu"),
+    "thinking": os.getenv("DEFAULT_THINKING_PROVIDER", "modelscope"),
+}
+
+# Model defaults (optional overrides)
+MODEL_DEFAULTS = {
+    "text": os.getenv("DEFAULT_TEXT_MODEL", "glm-4-flash"),
+    "vision": os.getenv("DEFAULT_VISION_MODEL", "glm-4.6v"),
 }
 
 # Frame extraction configuration
