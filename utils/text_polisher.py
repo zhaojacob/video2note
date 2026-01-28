@@ -442,7 +442,7 @@ class TextPolisher:
         Returns:
             Structured data with sections, headers, and timestamped paragraphs
         """
-        if not self.llm_client:
+        if not self.is_available():
             logger.warning("TextPolisher not available")
             return {"sections": []}
             
@@ -686,7 +686,7 @@ class TextPolisher:
         Returns:
             Polished text with chapter markers, or None if failed
         """
-        if not self.llm_client:
+        if not self.is_available():
             logger.warning("TextPolisher not available, returning raw transcript")
             return raw_transcript
             

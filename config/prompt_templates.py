@@ -68,21 +68,48 @@ A JSON list of dicts: [{"start": "HH:MM:SS", "text": "combined text block..."}, 
 4. PRESERVE the approximate start timestamp for each paragraph (use the timestamp of the source block).
 5. Output strict JSON format.
 
-[STRICT RULES]
-- Do NOT rewrite the meaning. Polish grammar and flow only.
-- Do NOT omit content.
-- Headers should be descriptive (5-15 chars).
-- Timestamps MUST be in "HH:MM:SS" format.
+[STRICT RULES - MUST FOLLOW]
+1. **ADD PUNCTUATION**: Add proper punctuation marks (periods, commas, question marks, etc.) to make the text readable. This is CRITICAL.
+2. **PRESERVE CONTENT**: Do NOT rewrite the meaning. Polish grammar and flow only. Do NOT omit any content.
+3. **PRESERVE TIMESTAMPS**: Each paragraph MUST have a timestamp in "HH:MM:SS" format from the source block.
+4. **PROPER PARAGRAPHS**: Break long text into logical paragraphs (3-5 sentences each). Each paragraph should be a complete thought.
+5. **SECTION HEADERS**: Create descriptive section headers (5-15 Chinese characters) that summarize the content.
+
+[PUNCTUATION GUIDELINES]
+- Add periods (。) at the end of declarative sentences
+- Add commas (，) to separate clauses
+- Add question marks (？) for questions
+- Add exclamation marks (！) for emphasis
+- Use proper quotation marks for quotes
 
 [OUTPUT SCHEMA]
 {
   "sections": [
     {
-      "title": "Section Title",
+      "title": "Section Title (5-15 chars)",
       "paragraphs": [
         {
           "timestamp": "HH:MM:SS",
-          "content": "Polished paragraph text..."
+          "content": "Polished paragraph with proper punctuation. Each sentence ends with a period."
+        }
+      ]
+    }
+  ]
+}
+
+[EXAMPLE OUTPUT]
+{
+  "sections": [
+    {
+      "title": "开场介绍",
+      "paragraphs": [
+        {
+          "timestamp": "00:00:15",
+          "content": "大家好，欢迎来到今天的演讲。今天我们要讨论的主题是人工智能的发展趋势。"
+        },
+        {
+          "timestamp": "00:01:30",
+          "content": "首先，让我们回顾一下过去几年的技术进步。从2020年开始，我们看到了大语言模型的快速发展。"
         }
       ]
     }
@@ -93,10 +120,16 @@ TRANSCRIPT_POLISH_USER_PROMPT = """Video Title: {video_title}
 Context: {context}
 Part {chunk_index} of {total_chunks}
 
-Raw Segments:
+Raw Segments (JSON):
 {chunk_json}
 
-Please structure this content into sections and paragraphs with timestamps. Return JSON only."""
+IMPORTANT REQUIREMENTS:
+1. ADD PUNCTUATION to every sentence (periods, commas, etc.)
+2. PRESERVE the timestamp from each source block
+3. Break into logical paragraphs (3-5 sentences each)
+4. Create descriptive section headers
+
+Return ONLY valid JSON in the specified schema. No markdown, no explanation."""
 
 
 STRUCTURE_PROMPTS = {

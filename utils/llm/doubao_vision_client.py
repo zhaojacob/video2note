@@ -126,16 +126,51 @@ class DoubaoVisionClient(BaseLLMClient):
             print("-" * 60)
             
             # 使用 responses.create() API
-            response = self.client.responses.create(**params)
+            try:
+                response = self.client.responses.create(**params)
+            except AttributeError as e:
+                # 如果 responses.create() 方法不存在，降级到标准 API
+                logger.warning(f"Doubao responses.create() method not available: {e}")
+                return self._analyze_image_standard(image_path, prompt, max_tokens)
             
             # Parse response
-            # 豆包的响应格式可能不同，需要适配
-            if hasattr(response, 'choices') and response.choices:
+            # 豆包返回的是列表格式: [ResponseReasoningItem, ResponseOutputMessage]
+            content = None
+            
+            if isinstance(response, list):
+                # 处理列表格式的响应
+                for item in response:
+                    # 查找 ResponseOutputMessage
+                    if hasattr(item, 'content') and item.content:
+                        # content 是一个列表，包含 ResponseOutputText
+                        if isinstance(item.content, list) and len(item.content) > 0:
+                            first_content = item.content[0]
+                            if hasattr(first_content, 'text'):
+                                content = first_content.text
+                                break
+            elif hasattr(response, 'choices') and response.choices:
+                # 标准 OpenAI 格式
                 content = response.choices[0].message.content
             elif hasattr(response, 'output'):
+                # 其他格式
                 content = response.output
-            else:
+            
+            if not content:
+                # 如果无法解析，转换为字符串
                 content = str(response)
+            
+            # 确保 content 是字符串
+            if isinstance(content, list):
+                # 如果是列表，尝试提取文本
+                text_parts = []
+                for item in content:
+                    if hasattr(item, 'text'):
+                        text_parts.append(item.text)
+                    elif isinstance(item, str):
+                        text_parts.append(item)
+                    else:
+                        text_parts.append(str(item))
+                content = " ".join(text_parts) if text_parts else str(content)
             
             logger.info(f"Doubao analysis success: {len(content)} chars")
             print(f"\n[DEBUG] Doubao Response:")
@@ -149,14 +184,11 @@ class DoubaoVisionClient(BaseLLMClient):
                 "model": self.model,
             }
             
-        except AttributeError as e:
-            # 如果 responses.create() 不存在，尝试使用标准 API
-            logger.warning(f"Doubao responses.create() not available, trying standard API: {e}")
-            return self._analyze_image_standard(image_path, prompt, max_tokens)
-            
         except Exception as e:
             logger.error(f"Doubao image analysis failed: {e}")
             print(f"\n[ERROR] Doubao analysis failed: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def _analyze_image_standard(

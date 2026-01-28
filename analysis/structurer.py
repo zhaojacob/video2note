@@ -271,32 +271,46 @@ class Structurer:
             return "".join(c.lower() for c in text if c.isalnum())
 
         if not raw_transcript or not polished_sections:
+            logger.warning("Cannot align timestamps: empty transcript or sections")
             return
 
         # Prepare raw transcript index
         # We'll search through raw segments sequentially
         current_raw_idx = 0
         total_raw = len(raw_transcript)
+        last_timestamp = 0.0  # Track last successful timestamp for fallback
+        
+        matched_count = 0
+        total_paras = 0
         
         for section in polished_sections:
             for para in section.get("paragraphs", []):
+                total_paras += 1
                 para_text = para.get("content", "")
                 if not para_text:
+                    # Set default timestamp if no content
+                    if not para.get("timestamp"):
+                        para["timestamp"] = "00:00:00"
+                        para["timestamp_seconds"] = 0.0
                     continue
                     
-                # Take first ~50 chars of normalized paragraph text as query
+                # Take first ~100 chars of normalized paragraph text as query
                 query = normalize(para_text[:100])
                 if len(query) < 10:
+                    # Very short text, use last timestamp
+                    if not para.get("timestamp"):
+                        hours = int(last_timestamp // 3600)
+                        minutes = int((last_timestamp % 3600) // 60)
+                        secs = int(last_timestamp % 60)
+                        para["timestamp"] = f"{hours:02d}:{minutes:02d}:{secs:02d}"
+                        para["timestamp_seconds"] = last_timestamp
                     continue
                     
                 best_ratio = 0.0
                 best_idx = current_raw_idx
                 
                 # Search window: current position + next 50 segments (optimization)
-                # If not found, extend search to end (fallback)
                 search_end = min(current_raw_idx + 50, total_raw)
-                
-                found_match = False
                 
                 # First pass: local search
                 for i in range(current_raw_idx, search_end):
@@ -318,9 +332,11 @@ class Structurer:
                 # If match is good enough, update timestamp and advance cursor
                 if best_ratio > 0.4: # Threshold for fuzzy match
                     current_raw_idx = best_idx
+                    matched_count += 1
                     
                     # Update timestamp
                     start_time = raw_transcript[best_idx].get("start", 0)
+                    last_timestamp = start_time  # Update last successful timestamp
                     
                     # Format as HH:MM:SS
                     hours = int(start_time // 3600)
@@ -330,8 +346,16 @@ class Structurer:
                     # Also store seconds for image interleaving
                     para["timestamp_seconds"] = start_time
                 else:
-                    # If no good match found, keep existing timestamp (from LLM) or inherit from previous
-                    pass
+                    # If no good match found, use last timestamp as fallback
+                    if not para.get("timestamp"):
+                        hours = int(last_timestamp // 3600)
+                        minutes = int((last_timestamp % 3600) // 60)
+                        secs = int(last_timestamp % 60)
+                        para["timestamp"] = f"{hours:02d}:{minutes:02d}:{secs:02d}"
+                        para["timestamp_seconds"] = last_timestamp
+        
+        logger.info(f"Timestamp alignment: {matched_count}/{total_paras} paragraphs matched")
+        print(f"[Text Polish] Timestamp alignment: {matched_count}/{total_paras} paragraphs matched")
 
     def _interleave_images_into_sections(
         self,
@@ -347,28 +371,44 @@ class Structurer:
             key=lambda x: x.get("timestamp", 0)
         )
         
+        if not sorted_frames:
+            logger.info("No frames to interleave")
+            return
+            
+        logger.info(f"Interleaving {len(sorted_frames)} frames into sections")
+        
         # Flatten paragraphs for easy iteration
         all_paragraphs = []
         for section in sections:
             for para in section.get("paragraphs", []):
-                # Parse timestamp to seconds
-                ts_str = para.get("timestamp", "00:00:00")
-                parts = ts_str.split(":")
-                seconds = 0
-                if len(parts) == 3:
-                    seconds = int(parts[0])*3600 + int(parts[1])*60 + int(parts[2])
-                elif len(parts) == 2:
-                    seconds = int(parts[0])*60 + int(parts[1])
+                # Parse timestamp to seconds (use timestamp_seconds if already set)
+                if "timestamp_seconds" not in para:
+                    ts_str = para.get("timestamp", "00:00:00")
+                    parts = ts_str.split(":")
+                    seconds = 0
+                    try:
+                        if len(parts) == 3:
+                            seconds = int(parts[0])*3600 + int(parts[1])*60 + int(parts[2])
+                        elif len(parts) == 2:
+                            seconds = int(parts[0])*60 + int(parts[1])
+                    except ValueError:
+                        seconds = 0
+                    para["timestamp_seconds"] = seconds
                 
-                para["timestamp_seconds"] = seconds
                 all_paragraphs.append(para)
+        
+        if not all_paragraphs:
+            logger.warning("No paragraphs to interleave images into")
+            return
                 
         # Distribute images
         current_frame_idx = 0
+        images_distributed = 0
+        
         for i, para in enumerate(all_paragraphs):
-            para_start = para["timestamp_seconds"]
+            para_start = para.get("timestamp_seconds", 0)
             # Next paragraph start or end of video (infinity)
-            para_end = all_paragraphs[i+1]["timestamp_seconds"] if i < len(all_paragraphs)-1 else float('inf')
+            para_end = all_paragraphs[i+1].get("timestamp_seconds", float('inf')) if i < len(all_paragraphs)-1 else float('inf')
             
             para["images"] = []
             
@@ -381,14 +421,19 @@ class Structurer:
                     # Attach to this one if it's the first
                     if i == 0:
                         self._add_frame_to_para(para, frame)
+                        images_distributed += 1
                     current_frame_idx += 1
                 elif frame_ts >= para_start and frame_ts < para_end:
                     # Frame belongs to this paragraph
                     self._add_frame_to_para(para, frame)
+                    images_distributed += 1
                     current_frame_idx += 1
                 else:
                     # Frame is after this paragraph
                     break
+        
+        logger.info(f"Distributed {images_distributed} images into {len(all_paragraphs)} paragraphs")
+        print(f"[Text Polish] Distributed {images_distributed} images into {len(all_paragraphs)} paragraphs")
                     
     def _add_frame_to_para(self, para, frame):
         """Add frame to paragraph images list"""

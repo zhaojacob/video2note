@@ -17,13 +17,14 @@ Usage:
     polish_config = get_task_recommendation("polish")
 """
 import os
+import logging
 import yaml
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
-from utils.logger import get_logger
 
-logger = get_logger(__name__)
+# Use standard logging to avoid circular import with utils.logger
+logger = logging.getLogger(__name__)
 
 # Cache for loaded configuration
 _config_cache: Optional[Dict[str, Any]] = None

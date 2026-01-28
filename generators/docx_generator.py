@@ -341,7 +341,9 @@ class DocxGenerator:
                 # Content
                 content = para.get("content", "").strip()
                 if content:
-                    run = p.add_run(content)
+                    # 替换文本中的 \n 为空格，避免软换行符 ^l
+                    content_clean = content.replace('\n', ' ').replace('\r', '')
+                    run = p.add_run(content_clean)
                     self._set_run_font(run)
 
     def _render_chapters_with_images(
@@ -388,11 +390,13 @@ class DocxGenerator:
                     if not para_text:
                         continue
                     
+                    # 替换文本中的 \n 为空格，避免软换行符
+                    para_text_clean = para_text.replace('\n', ' ')
                     p = doc.add_paragraph()
                     p.paragraph_format.first_line_indent = Inches(0.5)
                     p.paragraph_format.line_spacing = 1.5
                     
-                    run = p.add_run(para_text)
+                    run = p.add_run(para_text_clean)
                     self._set_run_font(run)
             
             doc.add_paragraph()
@@ -431,11 +435,13 @@ class DocxGenerator:
             if not para_text:
                 continue
 
+            # 替换文本中的 \n 为空格，避免软换行符 ^l
+            para_text_clean = para_text.replace('\n', ' ').replace('\r', '')
             p = doc.add_paragraph()
             p.paragraph_format.first_line_indent = Inches(0.5)
             p.paragraph_format.line_spacing = 1.5
 
-            run = p.add_run(para_text)
+            run = p.add_run(para_text_clean)
             self._set_run_font(run)
 
     def _render_text_with_markers(
@@ -476,10 +482,12 @@ class DocxGenerator:
 
             # Add paragraph
             if para_text.strip():
+                # 替换文本中的 \n 为空格，避免软换行符
+                para_text_clean = para_text.strip().replace('\n', ' ')
                 p = doc.add_paragraph()
                 p.paragraph_format.first_line_indent = Inches(0.5)
                 p.paragraph_format.line_spacing = 1.5
-                run = p.add_run(para_text.strip())
+                run = p.add_run(para_text_clean)
                 self._set_run_font(run)
 
     def _render_text_with_markers_aligned(
@@ -570,16 +578,19 @@ class DocxGenerator:
                 # Add content
                 content = item.get("content", "").strip()
                 if content:
-                    content_run = p.add_run(content)
+                    # 替换文本中的 \n 为空格，避免软换行符 ^l
+                    content_clean = content.replace('\n', ' ').replace('\r', '')
+                    content_run = p.add_run(content_clean)
                     self._set_run_font(content_run)
 
                 # Add translation if available
                 content_translated = item.get("content_translated", "").strip()
                 if content_translated:
+                    content_translated_clean = content_translated.replace('\n', ' ').replace('\r', '')
                     p2 = doc.add_paragraph()
                     p2.paragraph_format.left_indent = Inches(0.3)
                     p2.paragraph_format.line_spacing = 1.5
-                    trans_run = p2.add_run(content_translated)
+                    trans_run = p2.add_run(content_translated_clean)
                     self._set_run_font(trans_run, color=COLOR_GRAY, italic=True)
 
                 para_idx += 1
@@ -618,21 +629,25 @@ class DocxGenerator:
                 content_translated = item.get("content_translated", "").strip()
 
                 if content:
+                    # 替换文本中的 \n 为空格，避免软换行符 ^l
+                    content_clean = content.replace('\n', ' ').replace('\r', '')
+                    
                     p = doc.add_paragraph()
                     # Timestamp in bold
                     ts_run = p.add_run(f"{timestamp} ")
                     self._set_run_font(ts_run, bold=True)
                     # Content
-                    content_run = p.add_run(content)
+                    content_run = p.add_run(content_clean)
                     self._set_run_font(content_run)
                     p.paragraph_format.line_spacing = 1.5
 
                     # Add translation if available
                     if content_translated:
+                        content_translated_clean = content_translated.replace('\n', ' ').replace('\r', '')
                         p2 = doc.add_paragraph()
                         # Indent for translation
                         p2.paragraph_format.left_indent = Inches(0.3)
-                        trans_run = p2.add_run(content_translated)
+                        trans_run = p2.add_run(content_translated_clean)
                         self._set_run_font(trans_run, color=COLOR_GRAY, italic=True)
                         p2.paragraph_format.line_spacing = 1.5
 
