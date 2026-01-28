@@ -160,3 +160,44 @@ LOGGING_CONFIG = {
     "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     "file": str(OUTPUT_DIR / "system.log"),
 }
+
+# ============================================================================
+# NEW: Unified LLM Configuration (Recommended)
+# ============================================================================
+# The new unified architecture provides:
+# - Single interface for all LLM providers
+# - Automatic fallback strategies
+# - Dynamic model selection
+# - Health checking
+#
+# To use the new architecture:
+# from utils.llm.unified_manager import UnifiedLLMManager
+# manager = UnifiedLLMManager()
+# client = manager.get_client("glm-4-flash")
+UNIFIED_LLM_CONFIG = {
+    # Enable/disable unified manager globally
+    "enabled": os.getenv("USE_UNIFIED_LLM", "false").lower() == "true",
+
+    # Text task default model
+    "default_text_model": os.getenv("DEFAULT_TEXT_MODEL", "glm-4-flash"),
+
+    # Vision task default model
+    "default_vision_model": os.getenv("DEFAULT_VISION_MODEL", "glm-4.6v"),
+
+    # Enable fallback strategy
+    "enable_fallback": True,
+
+    # Fallback retry attempts
+    "max_fallback_retries": 3,
+
+    # Enable automatic health checking
+    "enable_health_check": True,
+}
+
+# ============================================================================
+# LEGACY: Individual LLM Configurations (Backward Compatible)
+# ============================================================================
+# The following configurations are maintained for backward compatibility.
+# New code should use UnifiedLLMManager instead.
+# The legacy clients (GLMClient, DoubaoClient) will be moved to analysis/legacy/
+#

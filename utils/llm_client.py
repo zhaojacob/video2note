@@ -1,16 +1,20 @@
 """
 Generic LLM Client wrapper for OpenAI-compatible APIs.
 Provides robust error handling, retry logic, and detailed logging.
+Now inherits from BaseLLMClient for unified architecture.
 """
 import logging
 import time
+import asyncio
 from typing import List, Dict, Optional, Any, Union
+from pathlib import Path
 
-from openai import OpenAI, APIError, RateLimitError, APITimeoutError, AuthenticationError, APIConnectionError
+from openai import OpenAI, AsyncOpenAI, APIError, RateLimitError, APITimeoutError, AuthenticationError, APIConnectionError
+from utils.llm.base_client import BaseLLMClient
 
 logger = logging.getLogger(__name__)
 
-class LLMClient:
+class LLMClient(BaseLLMClient):
     """
     Generic client for interacting with LLM APIs (OpenAI compatible).
     
@@ -21,10 +25,10 @@ class LLMClient:
     """
     
     def __init__(
-        self, 
-        api_key: str, 
-        base_url: str, 
-        model: str, 
+        self,
+        api_key: str,
+        base_url: str,
+        model: str,
         timeout: float = 300.0,
         max_retries: int = 3,
         default_max_tokens: int = 4096,
@@ -32,7 +36,7 @@ class LLMClient:
     ):
         """
         Initialize the LLM client.
-        
+
         Args:
             api_key: API key for authentication
             base_url: Base URL for the API
@@ -41,12 +45,19 @@ class LLMClient:
             max_retries: Number of connection retries
             default_max_tokens: Default max tokens for generation
         """
-        self.api_key = api_key
-        self.base_url = base_url
-        self.model = model
+        # Initialize base class
+        super().__init__(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            max_retries=max_retries
+        )
+
         self.default_max_tokens = default_max_tokens
         self.extra_body = extra_body
-        
+        self._async_client = None  # Lazy initialization
+
         if not self.api_key:
             logger.warning(f"API key not provided for model {model}, client will be disabled")
             self.client = None
@@ -58,6 +69,17 @@ class LLMClient:
                 max_retries=max_retries
             )
             logger.info(f"LLMClient initialized: model={self.model}, base_url={self.base_url}, timeout={timeout}s")
+
+    def _get_async_client(self) -> AsyncOpenAI:
+        """Get or create async client"""
+        if self._async_client is None:
+            self._async_client = AsyncOpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                timeout=self.timeout,
+                max_retries=self.max_retries
+            )
+        return self._async_client
 
     def is_available(self) -> bool:
         """Check if client is initialized and available"""
@@ -231,10 +253,260 @@ class LLMClient:
     def _handle_unexpected_error(self, e: Exception, attempt: int, max_retries: int) -> bool:
         logger.error(f"LLM Unexpected Error (attempt {attempt + 1}): {type(e).__name__}: {e}")
         print(f"\n[ERROR] Unexpected error: {e}")
-        
+
         if attempt < max_retries:
             wait_time = (attempt + 1) * 5
             print(f"[INFO] Retrying in {wait_time}s...")
             time.sleep(wait_time)
             return True
         return False
+
+    async def chat_completion_async(
+        self,
+        messages: List[Dict[str, str]],
+        max_tokens: Optional[int] = None,
+        temperature: float = 0.3,
+        retry_count: int = 3,
+        stream: bool = False,
+        **kwargs
+    ) -> Optional[str]:
+        """
+        Async version of chat completion
+
+        Args:
+            messages: List of message dicts
+            max_tokens: Max tokens to generate
+            temperature: Sampling temperature
+            retry_count: Number of retries
+            stream: Whether to stream response
+
+        Returns:
+            Generated text content or None if failed
+        """
+        if not self.client:
+            logger.error("LLM client not initialized")
+            return None
+
+        client = self._get_async_client()
+
+        # Prepare parameters
+        params = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": max_tokens or self.default_max_tokens,
+            "temperature": temperature,
+            "stream": stream,
+        }
+        if self.extra_body:
+            params["extra_body"] = self.extra_body
+
+        self._log_request(params)
+
+        for attempt in range(retry_count + 1):
+            try:
+                logger.debug(f"Calling LLM API async (attempt {attempt + 1}/{retry_count + 1})")
+
+                response = await client.chat.completions.create(**params)
+
+                message = response.choices[0].message
+                content = message.content
+                reasoning_content = getattr(message, "reasoning_content", None)
+
+                logger.info(f"LLM API async success: output_chars={len(content) if content else 0}")
+
+                print(f"\n[DEBUG] LLM Response (async):")
+                if reasoning_content:
+                    print(reasoning_content)
+                    print("\n\n === Final Answer ===\n")
+                print(content)
+                print("-" * 60)
+
+                return content
+
+            except AuthenticationError as e:
+                self._handle_auth_error(e)
+                return None
+
+            except RateLimitError as e:
+                if not self._handle_rate_limit(e, attempt, retry_count):
+                    return None
+                # Add async sleep
+                await asyncio.sleep(60)
+
+            except APITimeoutError as e:
+                if not self._handle_timeout(e, attempt, retry_count):
+                    return None
+                wait_time = (attempt + 1) * 20
+                await asyncio.sleep(wait_time)
+
+            except APIConnectionError as e:
+                if not self._handle_connection_error(e, attempt, retry_count):
+                    return None
+                wait_time = (attempt + 1) * 10
+                await asyncio.sleep(wait_time)
+
+            except APIError as e:
+                if not self._handle_api_error(e, attempt, retry_count):
+                    return None
+                wait_time = (attempt + 1) * 5
+                await asyncio.sleep(wait_time)
+
+            except Exception as e:
+                if not self._handle_unexpected_error(e, attempt, retry_count):
+                    return None
+                wait_time = (attempt + 1) * 5
+                await asyncio.sleep(wait_time)
+
+        return None
+
+    def analyze_image(
+        self,
+        image_path: Union[str, Path],
+        prompt: str,
+        max_tokens: int = 1000,
+        **kwargs
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Analyze image using vision model
+
+        Args:
+            image_path: Path to image file
+            prompt: Analysis prompt
+            max_tokens: Maximum tokens in response
+            **kwargs: Additional parameters
+
+        Returns:
+            Dictionary with analysis results or None
+        """
+        if not self.client:
+            logger.error("LLM client not initialized")
+            return None
+
+        try:
+            # Encode image
+            image_base64 = self._encode_image(image_path)
+
+            # Prepare request using OpenAI-compatible format
+            params = {
+                "model": self.model,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt
+                        },
+                    ],
+                }],
+                "max_tokens": max_tokens,
+            }
+
+            # Add extra_body if needed
+            if self.extra_body:
+                params["extra_body"] = self.extra_body
+
+            logger.info(f"Analyzing image {image_path} with model {self.model}")
+
+            response = self.client.chat.completions.create(**params)
+
+            # Parse response
+            content = response.choices[0].message.content
+
+            return {
+                "description": content,
+                "text_content": self._extract_text_content(content),
+                "key_points": self._extract_key_points(content),
+                "model": self.model,
+                "usage": {
+                    "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
+                    "completion_tokens": response.usage.completion_tokens if response.usage else 0,
+                    "total_tokens": response.usage.total_tokens if response.usage else 0,
+                },
+            }
+
+        except Exception as e:
+            logger.error(f"Image analysis failed: {e}")
+            return None
+
+    async def analyze_image_async(
+        self,
+        image_path: Union[str, Path],
+        prompt: str,
+        max_tokens: int = 1000,
+        **kwargs
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Async version of image analysis
+        """
+        if not self.client:
+            logger.error("LLM client not initialized")
+            return None
+
+        try:
+            client = self._get_async_client()
+
+            # Encode image
+            image_base64 = self._encode_image(image_path)
+
+            # Prepare request
+            params = {
+                "model": self.model,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt
+                        },
+                    ],
+                }],
+                "max_tokens": max_tokens,
+            }
+
+            if self.extra_body:
+                params["extra_body"] = self.extra_body
+
+            logger.info(f"Analyzing image async {image_path} with model {self.model}")
+
+            response = await client.chat.completions.create(**params)
+
+            # Parse response
+            content = response.choices[0].message.content
+
+            return {
+                "description": content,
+                "text_content": self._extract_text_content(content),
+                "key_points": self._extract_key_points(content),
+                "model": self.model,
+                "usage": {
+                    "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
+                    "completion_tokens": response.usage.completion_tokens if response.usage else 0,
+                    "total_tokens": response.usage.total_tokens if response.usage else 0,
+                },
+            }
+
+        except Exception as e:
+            logger.error(f"Async image analysis failed: {e}")
+            return None
+
+    def __del__(self):
+        """Cleanup async client on deletion"""
+        if self._async_client:
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # If loop is running, schedule cleanup
+                    loop.create_task(self._async_client.close())
+                else:
+                    # If loop is not running, run cleanup
+                    loop.run_until_complete(self._async_client.close())
+            except Exception:
+                pass

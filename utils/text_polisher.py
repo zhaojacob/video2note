@@ -1,12 +1,16 @@
 """
 Text polisher using DeepSeek Chat model
 Supports incremental polishing for long transcripts
+
+Now uses UnifiedLLMManager for flexible model selection and fallback strategies.
 """
 import logging
 import re
 from typing import Optional, List, Dict, Any
 from utils.llm_client import LLMClient
+from utils.llm.unified_manager import UnifiedLLMManager
 from config.settings import TEXT_LLM_PROVIDER, TEXT_LLM_CONFIGS
+from config.llm_config import get_recommended_models, get_fallback_chain
 from config.prompt_templates import TRANSCRIPT_POLISH_SYSTEM_PROMPT, TRANSCRIPT_POLISH_USER_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -32,42 +36,116 @@ class TextPolisher:
     # Max characters for single-turn processing
     MAX_SINGLE_TURN = 4500
     
-    def __init__(self, api_key: Optional[str] = None, default_temperature: float = 0.3):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        default_temperature: float = 0.3,
+        use_unified_manager: bool = False,
+        model_id: Optional[str] = None
+    ):
         """
-        Initialize TextPolisher with DeepSeek API
-        
+        Initialize TextPolisher
+
         Args:
             api_key: DeepSeek API key (optional, uses config if not provided)
             default_temperature: Default temperature for LLM generation
+            use_unified_manager: Use new UnifiedLLMManager (recommended)
+            model_id: Specific model ID to use (requires use_unified_manager=True)
         """
-        provider = TEXT_LLM_PROVIDER
-        config = TEXT_LLM_CONFIGS.get(provider, TEXT_LLM_CONFIGS.get("modelscope", {}))
-
-        self.provider = provider
-        self.api_key = api_key or config.get("api_key")
-        self.base_url = config.get("base_url")
-        self.model = config.get("model")
-        self.max_tokens = config.get("max_tokens", 8192)
-        self.extra_body = config.get("extra_body")
+        self.provider = TEXT_LLM_PROVIDER
+        self.use_unified_manager = use_unified_manager
         self.default_temperature = default_temperature
-        
-        if not self.api_key:
-            logger.warning("Text LLM API key not configured, TextPolisher will be disabled")
-            self.llm_client = None
+
+        if use_unified_manager:
+            # New implementation using UnifiedLLMManager
+            self.manager = UnifiedLLMManager()
+            self.model_id = model_id
+            self.llm_client = None  # Will use manager instead
+
+            # Get recommended models for polish task
+            self.recommendation = get_recommended_models("polish")
+            self.fallback_chain = self.recommendation["fallback"]
+
+            logger.info(f"TextPolisher initialized with UnifiedLLMManager (fallback: {self.fallback_chain})")
         else:
-            self.llm_client = LLMClient(
-                api_key=self.api_key,
-                base_url=self.base_url,
-                model=self.model,
-                timeout=600.0,  # 10 minute timeout for long responses
-                max_retries=3,
-                default_max_tokens=self.max_tokens,
-                extra_body=self.extra_body
-            )
+            # Legacy implementation (backward compatible)
+            config = TEXT_LLM_CONFIGS.get(self.provider, TEXT_LLM_CONFIGS.get("modelscope", {}))
+
+            self.api_key = api_key or config.get("api_key")
+            self.base_url = config.get("base_url")
+            self.model = config.get("model")
+            self.max_tokens = config.get("max_tokens", 8192)
+            self.extra_body = config.get("extra_body")
+            self.manager = None
+            self.model_id = None
+
+            if not self.api_key:
+                logger.warning("Text LLM API key not configured, TextPolisher will be disabled")
+                self.llm_client = None
+            else:
+                self.llm_client = LLMClient(
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                    model=self.model,
+                    timeout=600.0,
+                    max_retries=3,
+                    default_max_tokens=self.max_tokens,
+                    extra_body=self.extra_body
+                )
+
+            logger.info(f"TextPolisher initialized with legacy LLMClient (model={self.model})")
 
     def is_available(self) -> bool:
         """Check if polisher is available"""
-        return self.llm_client is not None and self.llm_client.is_available()
+        if self.use_unified_manager:
+            # Check if any model in fallback chain is available
+            for model_id in self.fallback_chain:
+                client = self.manager.get_client(model_id)
+                if client and client.is_available():
+                    return True
+            return False
+        else:
+            return self.llm_client is not None and self.llm_client.is_available()
+
+    def _call_llm(
+        self,
+        messages: List[Dict[str, str]],
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        retry_count: int = 2
+    ) -> Optional[str]:
+        """
+        Call LLM API with appropriate implementation
+
+        Args:
+            messages: Conversation messages
+            max_tokens: Max tokens for response
+            temperature: Sampling temperature
+            retry_count: Number of retries
+
+        Returns:
+            Response content string, or None if failed
+        """
+        temp = temperature if temperature is not None else self.default_temperature
+
+        if self.use_unified_manager:
+            # Use UnifiedLLMManager with fallback
+            providers = [self.model_id] if self.model_id else self.fallback_chain
+            return self.manager.chat_with_fallback(
+                messages=messages,
+                providers=providers,
+                max_tokens=max_tokens,
+                temperature=temp,
+                retry_count=retry_count
+            )
+        else:
+            # Use legacy LLMClient
+            return self.llm_client.chat_completion(
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temp,
+                retry_count=retry_count
+            )
 
     def _call_deepseek(self, messages: List[Dict[str, str]],
                        max_tokens: Optional[int] = None,
@@ -538,10 +616,10 @@ class TextPolisher:
         ]
         
         print(f"     Calling API...", end="", flush=True)
-        content = self.llm_client.chat_completion(
-            messages, 
-            max_tokens=max_tokens or self.max_tokens,
-            temperature=temperature if temperature is not None else self.default_temperature
+        content = self._call_llm(
+            messages,
+            max_tokens=max_tokens or 8192,
+            temperature=temperature
         )
         
         if not content:
@@ -683,11 +761,11 @@ Requirements:
             {"role": "user", "content": user_prompt}
         ]
 
-        print(f"  → Calling DeepSeek (this may take 1-2 minutes)...", end="", flush=True)
-        content = self.llm_client.chat_completion(
+        print(f"  → Calling LLM (this may take 1-2 minutes)...", end="", flush=True)
+        content = self._call_llm(
             messages,
-            max_tokens=max_tokens or self.max_tokens,
-            temperature=temperature if temperature is not None else self.default_temperature
+            max_tokens=max_tokens or 8192,
+            temperature=temperature
         )
 
         if content:
@@ -802,10 +880,10 @@ Note: Use paragraph breaks (\\n\\n). Do NOT use ## markers."""
 
                     # Polish this chunk with 8K max output
                     print(f"     Calling API...", end="", flush=True)
-                    polished_chunk = self.llm_client.chat_completion(
-                        messages, 
-                        max_tokens=max_tokens or self.max_tokens,
-                        temperature=temperature if temperature is not None else self.default_temperature
+                    polished_chunk = self._call_llm(
+                        messages,
+                        max_tokens=max_tokens or 8192,
+                        temperature=temperature
                     )
 
                     if polished_chunk:
@@ -950,10 +1028,10 @@ Note: Use paragraph breaks (\\n\\n). Do NOT use ## markers."""
             try:
                 print(f"[PROCESSING] Chunk {chunk_id+1} (attempt {attempt+1}/{max_retries})", end="", flush=True)
 
-                polished = self.llm_client.chat_completion(
-                    messages, 
-                    max_tokens=max_tokens or self.max_tokens,
-                    temperature=temperature if temperature is not None else self.default_temperature
+                polished = self._call_llm(
+                    messages,
+                    max_tokens=max_tokens or 8192,
+                    temperature=temperature
                 )
 
                 if polished:
