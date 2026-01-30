@@ -80,18 +80,46 @@ class VideoDownloader:
 
         # Common yt-dlp options
         ydl_opts = {
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'format': 'best[height<=360]/bestvideo[height<=360]+bestaudio/best',
             'outtmpl': str(self.output_dir / '%(title)s.%(ext)s'),
             'quiet': False,
             'no_warnings': False,
             'progress_hooks': [self._progress_hook],
+            # Retry and timeout settings
+            'retries': 10,
+            'fragment_retries': 10,
+            'socket_timeout': 60,
+            # Anti-blocking settings
+            'sleep_interval': 3,
+            'max_sleep_interval': 8,
+            'sleep_interval_requests': 1,
+            'geo_bypass': True,
+            'geo_bypass_country': 'US',
+            'allow_unplayable_formats': False,
         }
 
-        # Add cookies if available
-        cookie_file = VIDEO_CONFIG.get("cookie_file")
-        if cookie_file and Path(cookie_file).exists():
-            ydl_opts['cookiefile'] = cookie_file
-            logger.info(f"Using cookies from: {cookie_file}")
+        # Platform-specific extractor args
+        if platform == 'youtube':
+            # Use ios client - works better than android with recent YouTube changes
+            ydl_opts['extractor_args'] = {
+                'youtube': {
+                    'player_client': ['ios', 'mweb'],
+                }
+            }
+            # Don't use cookies for YouTube (android/ios clients don't support them)
+            logger.info("Using iOS client for YouTube (no cookies)")
+        else:
+            # Add cookies for non-YouTube platforms
+            cookie_file = VIDEO_CONFIG.get("cookie_file")
+            if cookie_file and Path(cookie_file).exists():
+                ydl_opts['cookiefile'] = cookie_file
+                logger.info(f"Using cookies from: {cookie_file}")
+
+        # Add user agent if configured
+        user_agent = VIDEO_CONFIG.get("user_agent")
+        if user_agent:
+            ydl_opts['http_headers'] = {'User-Agent': user_agent}
+            logger.info(f"Using custom User-Agent")
 
         # Add proxy if configured
         proxy = VIDEO_CONFIG.get("proxy") or kwargs.get("proxy")
@@ -99,15 +127,13 @@ class VideoDownloader:
             ydl_opts['proxy'] = proxy
             logger.info(f"Using proxy: {proxy}")
 
-        # Platform-specific options
+        # Platform-specific options for bilibili
         if platform == 'bilibili':
-            ydl_opts.update({
-                'extractor_args': {
-                    'bilibili': {
-                        'session': 'Warranty',
-                    }
+            ydl_opts['extractor_args'] = {
+                'bilibili': {
+                    'session': 'Warranty',
                 }
-            })
+            }
 
         try:
             # Extract info first to get title

@@ -124,15 +124,21 @@ Translation:"""
             return ""
 
     # Max characters per batch to stay under output token limit
-    # 6000 chars ≈ 2000-3000 tokens input, translation output ≈ similar
-    # With max_tokens=4096, this leaves safe margin
-    MAX_BATCH_CHARS = 6000
+    # Optimized for max_tokens=8192:
+    # - 12000 chars ≈ 4000-5000 tokens input
+    # - Translation output ≈ similar length
+    # - Total ≈ 8000-10000 tokens, within 8192 limit with margin
+    MAX_BATCH_CHARS = 12000
+    
+    # Max segments per batch (increased from 10 to 100)
+    # This dramatically reduces API calls for transcript translation
+    MAX_BATCH_SIZE = 100
 
     def translate_batch(
         self,
         texts: List[str],
         target_lang: str,
-        batch_size: int = 10
+        batch_size: int = 100
     ) -> List[str]:
         """
         Translate multiple texts in batches to reduce API calls
@@ -165,7 +171,7 @@ Translation:"""
             
             # Check if adding this text would exceed limits
             would_exceed_chars = current_batch_chars + text_len > self.MAX_BATCH_CHARS
-            would_exceed_count = len(current_batch) >= batch_size
+            would_exceed_count = len(current_batch) >= self.MAX_BATCH_SIZE
             
             if current_batch and (would_exceed_chars or would_exceed_count):
                 # Process current batch
@@ -245,9 +251,9 @@ Translations:"""
             ]
 
             # Calculate max_tokens: translation output ≈ input length
-            # Use 4096 as safe upper limit
+            # Use 8192 as upper limit (matching model config)
             total_chars = sum(len(t) for t in non_empty_texts)
-            estimated_output_tokens = min(total_chars * 2, 4096)
+            estimated_output_tokens = min(total_chars * 2, 8192)
 
             response_text = self.client.chat_completion(
                 messages=messages,

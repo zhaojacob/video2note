@@ -1,6 +1,9 @@
 # Environment variables (contains API keys)
 .env
 
+# Local configuration (contains personal settings like proxy)
+config/settings.py
+
 # Output directory (generated files)
 output/
 
@@ -95,3 +98,18 @@ logs/
 *.mp3
 *.wav
 *.flac
+
+# IDE and tool configurations
+.claude/
+.trae/
+*.swp
+*.swo
+*~
+
+# Test scripts
+test_*.py
+*_test.py
+*_debug.py
+
+# Temporary batch files (keep videos.txt as example)
+# *.txt  # Commented out to allow videos.txt
