@@ -2,6 +2,16 @@
 
 Automatically generate structured, illustrated notes from YouTube/Bilibili videos using AI.
 
+## Demo
+
+### Local Demo
+<video src="demo_video/demo.mp4" controls="controls" style="max-width: 100%;">
+</video>
+
+### Bilibili Demo
+[![Bilibili Demo](https://i0.hdslb.com/bfs/archive/8f8e078701987d65689100790886101560938743.jpg)](https://www.bilibili.com/video/BV17LFVzSEsM/)
+> Click image to watch on Bilibili
+
 ## Features
 
 - **Multi-Platform**: YouTube & Bilibili support
