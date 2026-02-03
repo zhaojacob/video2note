@@ -14,6 +14,7 @@ from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
 
 from utils.logger import get_logger
 from utils.file_handler import ensure_dir
@@ -80,6 +81,9 @@ class DocxGenerator:
         # Add version line
         self._add_version_line(doc, data["metadata"])
 
+        # Add page numbers
+        self._add_page_number(doc)
+
         # Add summary section (with translation if available)
         self._add_summary(
             doc, 
@@ -116,6 +120,87 @@ class DocxGenerator:
         logger.info(f"Word document saved: {output_path}")
 
         return output_path
+
+    def _add_page_number(self, doc: Document):
+        """Add page numbers to the document footer"""
+        def create_element(name):
+            return OxmlElement(name)
+
+        def create_attribute(element, name, value):
+            element.set(qn(name), value)
+
+        def add_page_number(paragraph):
+            # Alignment center
+            paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+            
+            # Page run
+            page_run = paragraph.add_run()
+            t1 = create_element('w:t')
+            create_attribute(t1, 'xml:space', 'preserve')
+            t1.text = '第 '
+            page_run._r.append(t1)
+            # Set font for "第 "
+            self._set_run_font(page_run, size=Pt(10))
+
+            # Page number field
+            page_num_run = paragraph.add_run()
+            fldChar1 = create_element('w:fldChar')
+            create_attribute(fldChar1, 'w:fldCharType', 'begin')
+
+            instrText = create_element('w:instrText')
+            create_attribute(instrText, 'xml:space', 'preserve')
+            instrText.text = "PAGE"
+
+            fldChar2 = create_element('w:fldChar')
+            create_attribute(fldChar2, 'w:fldCharType', 'end')
+
+            page_num_run._r.append(fldChar1)
+            page_num_run._r.append(instrText)
+            page_num_run._r.append(fldChar2)
+            # Set font for page number
+            self._set_run_font(page_num_run, size=Pt(10))
+
+            # Of run
+            of_run = paragraph.add_run()
+            t2 = create_element('w:t')
+            create_attribute(t2, 'xml:space', 'preserve')
+            t2.text = ' 页 共 '
+            of_run._r.append(t2)
+            # Set font for " 页 共 "
+            self._set_run_font(of_run, size=Pt(10))
+
+            # NumPages field
+            num_pages_run = paragraph.add_run()
+            fldChar3 = create_element('w:fldChar')
+            create_attribute(fldChar3, 'w:fldCharType', 'begin')
+
+            instrText2 = create_element('w:instrText')
+            create_attribute(instrText2, 'xml:space', 'preserve')
+            instrText2.text = "NUMPAGES"
+
+            fldChar4 = create_element('w:fldChar')
+            create_attribute(fldChar4, 'w:fldCharType', 'end')
+
+            num_pages_run._r.append(fldChar3)
+            num_pages_run._r.append(instrText2)
+            num_pages_run._r.append(fldChar4)
+            # Set font for total pages
+            self._set_run_font(num_pages_run, size=Pt(10))
+            
+            # Suffix run
+            suffix_run = paragraph.add_run()
+            t3 = create_element('w:t')
+            create_attribute(t3, 'xml:space', 'preserve')
+            t3.text = ' 页'
+            suffix_run._r.append(t3)
+            # Set font for " 页"
+            self._set_run_font(suffix_run, size=Pt(10))
+
+        # Access the footer of the first section
+        section = doc.sections[0]
+        footer = section.footer
+        paragraph = footer.paragraphs[0]
+        add_page_number(paragraph)
 
     def _setup_styles(self, doc: Document):
         """Setup document styles with proper fonts"""

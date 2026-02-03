@@ -3,6 +3,7 @@ Audio extraction from video files
 """
 from pathlib import Path
 from typing import Optional
+import subprocess
 
 import cv2
 import numpy as np
@@ -28,6 +29,14 @@ class AudioExtractor:
         """
         self.output_dir = output_dir or OUTPUT_DIRS["audio"]
         ensure_dir(self.output_dir)
+        self.ffmpeg_path = Path(r"F:\anaconda3\envs\video_note\Library\bin\ffmpeg.exe")
+        self.ffprobe_path = Path(r"F:\anaconda3\envs\video_note\Library\bin\ffprobe.exe")
+        if self.ffmpeg_path.exists():
+            AudioSegment.converter = str(self.ffmpeg_path)
+            logger.info(f"Using ffmpeg: {self.ffmpeg_path}")
+        if self.ffprobe_path.exists():
+            AudioSegment.ffprobe = str(self.ffprobe_path)
+            logger.info(f"Using ffprobe: {self.ffprobe_path}")
 
     def extract(
         self,
@@ -67,49 +76,85 @@ class AudioExtractor:
         logger.info(f"Extracting audio from: {video_path.name}")
 
         try:
-            # Method 1: Use pydub (supports more formats)
+            return self._extract_with_ffmpeg(
+                video_path,
+                output_path,
+                audio_format,
+                sample_rate,
+                channels,
+                bitrate
+            )
+        except Exception as e:
+            logger.error(f"Audio extraction with ffmpeg failed: {e}")
+
+        try:
             logger.info("Loading video with pydub...")
-
-            # Determine input format
             input_format = self._get_audio_format(video_path)
-
-            # Load audio from video
             audio = AudioSegment.from_file(
                 str(video_path),
                 format=input_format
             )
-
-            # Convert to desired format
             audio = audio.set_frame_rate(sample_rate)
             audio = audio.set_channels(channels)
-
-            # Export
             logger.info(f"Exporting audio to: {output_path}")
             audio.export(
                 str(output_path),
                 format=audio_format,
                 bitrate=bitrate if audio_format != 'wav' else None
             )
-
-            duration = len(audio) / 1000.0  # Convert to seconds
+            duration = len(audio) / 1000.0
             logger.info(f"Audio extraction completed: {duration:.2f} seconds")
-
             return output_path
-
         except Exception as e:
             logger.error(f"Audio extraction with pydub failed: {e}")
 
-            # Fallback: Use OpenCV
-            try:
-                logger.info("Trying OpenCV fallback method...")
-                return self._extract_with_opencv(
-                    video_path,
-                    output_path,
-                    sample_rate
-                )
-            except Exception as e2:
-                logger.error(f"OpenCV extraction also failed: {e2}")
-                raise
+        try:
+            logger.info("Trying OpenCV fallback method...")
+            return self._extract_with_opencv(
+                video_path,
+                output_path,
+                sample_rate
+            )
+        except Exception as e2:
+            logger.error(f"OpenCV extraction also failed: {e2}")
+            raise
+
+    def _extract_with_ffmpeg(
+        self,
+        video_path: Path,
+        output_path: Path,
+        audio_format: str,
+        sample_rate: int,
+        channels: int,
+        bitrate: str
+    ) -> Path:
+        if not self.ffmpeg_path.exists():
+            raise FileNotFoundError(f"ffmpeg not found: {self.ffmpeg_path}")
+
+        cmd = [
+            str(self.ffmpeg_path),
+            "-y",
+            "-i",
+            str(video_path),
+            "-vn",
+            "-ac",
+            str(channels),
+            "-ar",
+            str(sample_rate)
+        ]
+        if audio_format != "wav":
+            cmd += ["-b:a", bitrate]
+        cmd.append(str(output_path))
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or "ffmpeg failed")
+
+        return output_path
 
     def _get_audio_format(self, video_path: Path) -> str:
         """Get audio format from video file extension"""

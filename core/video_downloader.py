@@ -62,29 +62,43 @@ class VideoDownloader:
     def download(self, url: str, **kwargs) -> Dict[str, Any]:
         """
         Download video from URL
-
+        
         Args:
             url: Video URL
             **kwargs: Additional options for yt-dlp
-
+            
         Returns:
-            Dictionary with download information:
-                - filepath: Path to downloaded video
-                - title: Video title
-                - duration: Video duration in seconds
-                - platform: Source platform
-                - thumbnail: URL to thumbnail (if available)
+            Dictionary with download information
         """
+        # Ensure Node.js is in PATH for n-challenge
+        # The user provided path is F:\Applications\nodejs\node.EXE
+        node_dir = r"F:\Applications\nodejs"
+        if node_dir not in os.environ["PATH"]:
+            os.environ["PATH"] = node_dir + os.pathsep + os.environ["PATH"]
+            logger.info(f"Added Node.js to PATH: {node_dir}")
+
+        node_dir = r"F:\anaconda3\envs\video_note"
+        if node_dir not in os.environ["PATH"]:
+            os.environ["PATH"] = node_dir + os.pathsep + os.environ["PATH"]
+
         platform = self.detect_platform(url)
         logger.info(f"Detected platform: {platform}")
 
         # Common yt-dlp options
         ydl_opts = {
-            'format': 'best[height<=360]/bestvideo[height<=360]+bestaudio/best',
+            # Prefer 1080p/720p/480p/360p, merging video+audio (requires ffmpeg)
+            # Fallback to best available if specific heights missing
+            'format': 'bestvideo[height<=1080]+bestaudio/best[height<=1080]/bestvideo+bestaudio/best',
             'outtmpl': str(self.output_dir / '%(title)s.%(ext)s'),
             'quiet': False,
             'no_warnings': False,
             'progress_hooks': [self._progress_hook],
+            'js_runtimes': {
+                'node': {
+                    'path': r"F:\anaconda3\envs\video_note\node.exe",
+                }
+            },
+            'remote_components': 'ejs:github',
             # Retry and timeout settings
             'retries': 10,
             'fragment_retries': 10,
@@ -100,20 +114,20 @@ class VideoDownloader:
 
         # Platform-specific extractor args
         if platform == 'youtube':
-            # Use ios client - works better than android with recent YouTube changes
+            # Use 'tv' client first: Supports cookies + rarely triggers n-challenge
+            # 'android' second: Good fallback but skipped if cookies present
+            # 'web' last: Most likely to fail with n-challenge
             ydl_opts['extractor_args'] = {
                 'youtube': {
-                    'player_client': ['ios', 'mweb'],
+                    'player_client': ['tv', 'android', 'web'],
                 }
             }
-            # Don't use cookies for YouTube (android/ios clients don't support them)
-            logger.info("Using iOS client for YouTube (no cookies)")
-        else:
-            # Add cookies for non-YouTube platforms
-            cookie_file = VIDEO_CONFIG.get("cookie_file")
-            if cookie_file and Path(cookie_file).exists():
-                ydl_opts['cookiefile'] = cookie_file
-                logger.info(f"Using cookies from: {cookie_file}")
+
+        # Add cookies if configured (works for both YouTube and other platforms)
+        cookie_file = VIDEO_CONFIG.get("cookie_file")
+        if cookie_file and Path(cookie_file).exists():
+            ydl_opts['cookiefile'] = cookie_file
+            logger.info(f"Using cookies from: {cookie_file}")
 
         # Add user agent if configured
         user_agent = VIDEO_CONFIG.get("user_agent")
@@ -246,18 +260,3 @@ class VideoDownloader:
             'platform': 'local',
             'url': str(video_path),
         }
-
-
-def download_video(url: str, output_dir: Optional[Path] = None) -> Dict[str, Any]:
-    """
-    Convenience function to download a video
-
-    Args:
-        url: Video URL
-        output_dir: Output directory (optional)
-
-    Returns:
-        Video information dictionary
-    """
-    downloader = VideoDownloader(output_dir)
-    return downloader.download(url)

@@ -119,6 +119,10 @@ video_note_system/
 - [Architecture](docs/developer/architecture.md)
 - [LLM Integration](docs/developer/llm-integration.md)
 
+## Disclaimer
+
+This tool is for **personal learning and research only**. Users are responsible for ensuring their use complies with copyright laws and platform terms of service. See [DISCLAIMER.md](DISCLAIMER.md) for details.
+
 ## License
 
 MIT License

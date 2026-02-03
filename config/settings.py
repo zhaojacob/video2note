@@ -164,10 +164,22 @@ API_ALLOCATION_CONFIG = {
 }
 
 # Video download configuration
+# Check for cookies in priority order:
+# 1. cookies/cookies_netscape.txt (User provided Netscape format)
+# 2. cookies/cookies.txt (Legacy/Converted)
+# 3. output/cookies.txt (Legacy location)
+_cookie_path = PROJECT_ROOT / "cookies" / "cookies_netscape.txt"
+if not _cookie_path.exists():
+    _cookie_path = PROJECT_ROOT / "cookies" / "cookies.txt"
+if not _cookie_path.exists():
+    _cookie_path = OUTPUT_DIR / "cookies.txt"
+
 VIDEO_CONFIG = {
-    "cookie_file": os.path.join(OUTPUT_DIR, "cookies.txt"),
-    "proxy": None,  # e.g., "http://127.0.0.1:7890"
+    "cookie_file": str(_cookie_path),
+    "proxy": "http://127.0.0.1:7897",  # VPN proxy
     "quality": "best",  # best, worst, or specific format
+    # User agent (Chrome on Windows)
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 }
 
 # Logging configuration
