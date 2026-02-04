@@ -1,0 +1,152 @@
+# Research Agent Configuration
+# AI Research Report Writing Agent System
+
+version: "1.0"
+
+# Research Configuration
+research:
+  # Default research parameters
+  depth: "medium"  # shallow, medium, deep
+  breadth: 5        # number of search queries per subtopic
+  max_sources: 20   # maximum sources to collect
+  max_concurrent: 3 # concurrent search/fetch operations
+
+# LLM Configuration for Research Agents
+llm:
+  # Default provider for different agent types
+  planner:
+    provider: "deepseek"
+    model: "deepseek-chat"
+    temperature: 0.3
+    max_tokens: 4096
+
+  researcher:
+    provider: "deepseek"
+    model: "deepseek-chat"
+    temperature: 0.2
+    max_tokens: 8192
+
+  synthesizer:
+    provider: "deepseek"
+    model: "deepseek-chat"
+    temperature: 0.5
+    max_tokens: 16384
+
+  writer:
+    provider: "deepseek"
+    model: "deepseek-chat"
+    temperature: 0.7
+    max_tokens: 8192
+
+  # Fallback chains
+  fallback_chains:
+    primary: ["deepseek"]
+    vision: ["bytedance"]
+
+# Search Configuration
+search:
+  # Search providers
+  providers:
+    tavily:
+      enabled: true
+      api_key_env: "TAVILY_API_KEY"
+      max_results: 10
+
+    serper:
+      enabled: true
+      api_key_env: "SERPER_API_KEY"
+      max_results: 10
+
+    bing:
+      enabled: false
+      api_key_env: "BING_API_KEY"
+      max_results: 10
+
+  # Default search settings
+  default_provider: "tavily"
+  timeout: 30
+  retries: 3
+
+# Content Fetching Configuration
+fetch:
+  # Web reading service
+  jina:
+    enabled: true
+    base_url: "https://r.jina.ai"
+
+  # Content extraction settings
+  extract_images: false
+  max_content_length: 50000
+  timeout: 60
+
+# Vector Storage Configuration
+vector_store:
+  type: "chroma"  # chroma, faiss, qdrant
+  persist_directory: "data/research/vector_store"
+  collection_name: "research_sources"
+  embedding_model: "text-embedding-3-small"
+
+# Report Configuration
+report:
+  # Output formats
+  formats:
+    - markdown
+    - docx
+    - html
+    - json
+
+  # Default report structure
+  structure:
+    - title
+    - abstract
+    - introduction
+    - methodology
+    - findings
+    - discussion
+    - conclusion
+    - references
+
+  # Citation style
+  citation_style: "apa"  # apa, mla, chicago, ieee
+
+  # Length settings
+  min_words: 2000
+  max_words: 10000
+
+# Output Configuration
+output:
+  base_dir: "output/research"
+  timestamp_format: "%Y%m%d_%H%M%S"
+  save_intermediate: true
+  intermediate_dir: "data/research/intermediate"
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/research_agent.log"
+
+# Agent Workflow Settings
+workflow:
+  # Planning settings
+  planning:
+    max_subtopics: 10
+    min_subtopics: 3
+
+  # Research settings
+  research:
+    parallel_subtopics: true
+    verify_sources: true
+    min_source_credibility: 0.5
+
+  # Synthesis settings
+  synthesis:
+    identify_patterns: true
+    generate_insights: true
+    detect_contradictions: true
+
+  # Writing settings
+  writing:
+    outline_first: true
+    iterative_refinement: true
+    human_review: false
