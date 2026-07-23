@@ -113,3 +113,6 @@ test_*.py
 
 # Temporary batch files (keep videos.txt as example)
 # *.txt  # Commented out to allow videos.txt
+
+# Browser cookies for yt-dlp (credentials ¡ª never commit)
+cookies/
