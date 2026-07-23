@@ -90,6 +90,11 @@ Batch file format (videos.txt):
         help="Path to local video file (skip download)"
     )
 
+    parser.add_argument(
+        "--local-audio",
+        help="Path to local audio file (skip download and audio extraction, audio-only mode)"
+    )
+
     # Processing options
     parser.add_argument(
         "--skip-transcription",
@@ -290,8 +295,13 @@ def main():
         video_urls.extend(file_urls)
 
     # Check if we have any URLs
-    if not video_urls:
-        parser.error("Please provide at least one video URL (as argument or via --batch-file)")
+    if not video_urls and not getattr(args, 'local_audio', None):
+        print("Error: Please provide at least one video URL (as argument or via --batch-file), or use --local-audio")
+        return 1
+
+    # For audio-only mode, use a dummy URL if none provided
+    if not video_urls and args.local_audio:
+        video_urls = ["local_audio"]
 
     # Validate API keys before running
     try:
@@ -324,6 +334,7 @@ def main():
                 video_urls=video_urls,
                 output_formats=formats,
                 local_video=args.local_video,
+                local_audio=getattr(args, 'local_audio', None),
                 skip_transcription=args.skip_transcription,
                 skip_analysis=args.skip_analysis,
                 frame_strategy=args.frame_strategy,
@@ -350,6 +361,7 @@ def main():
                 video_url=video_urls[0],
                 output_formats=formats,
                 local_video=args.local_video,
+                local_audio=getattr(args, 'local_audio', None),
                 skip_transcription=args.skip_transcription,
                 skip_analysis=args.skip_analysis,
                 frame_strategy=args.frame_strategy,

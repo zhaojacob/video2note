@@ -102,6 +102,7 @@ class PipelineOrchestrator:
         video_url: str,
         output_formats: List[str] = None,
         local_video: str = None,
+        local_audio: str = None,
         skip_transcription: bool = False,
         skip_analysis: bool = False,
         frame_strategy: str = "uniform",
@@ -113,12 +114,13 @@ class PipelineOrchestrator:
         Run the complete pipeline
 
         Args:
-            video_url: Video URL (or dummy if using local_video)
+            video_url: Video URL (or dummy if using local_video/local_audio)
             frame_strategy: Frame extraction strategy ('uniform', 'paragraph', 'fixed_interval', 'transcript', 'interval', 'scene')
             frame_interval: Fixed interval in seconds for fixed_interval strategy (default: 10.0)
             max_frames: Maximum number of frames to extract (default: 5)
             output_formats: List of output formats (docx, markdown, json)
             local_video: Path to local video file (skip download)
+            local_audio: Path to local audio file (skip download and audio extraction)
             skip_transcription: Skip transcription step
             skip_analysis: Skip image analysis step
             translate_to: Target language for translation (None = no translation)
@@ -145,33 +147,65 @@ class PipelineOrchestrator:
         }
 
         try:
-            # Step 1: Download video (or use local)
-            print("\n" + "=" * 60)
-            print("[Step 1/7] Downloading video...")
-            print("=" * 60)
+            # Audio-only mode: skip download and audio extraction
+            is_audio_only = local_audio is not None
 
-            if local_video:
-                print(f"[INFO] Using local video: {local_video}")
-                video_info = self.video_downloader.download_from_local(local_video)
+            if is_audio_only:
+                # Step 1 & 2: Use local audio directly
+                print("\n" + "=" * 60)
+                print("[Step 1-2/7] Using local audio file (audio-only mode)...")
+                print("=" * 60)
+
+                audio_path = Path(local_audio)
+                if not audio_path.exists():
+                    raise FileNotFoundError(f"Audio file not found: {local_audio}")
+
+                # Get audio duration via pydub
+                from pydub import AudioSegment as _AS
+                _audio = _AS.from_file(str(audio_path))
+                audio_duration = len(_audio) / 1000.0
+                del _audio
+
+                video_info = {
+                    'filepath': str(audio_path),
+                    'title': audio_path.stem,
+                    'duration': audio_duration,
+                    'platform': 'local_audio',
+                    'url': str(audio_path),
+                }
+
+                print(f"[OK] Audio: {video_info['title']}")
+                print(f"[OK] Duration: {audio_duration:.2f}s ({int(audio_duration//60)}m {int(audio_duration%60)}s)")
+                print(f"[OK] Path: {audio_path}")
+
             else:
-                print(f"[INFO] Downloading from: {video_url}")
-                print("[PROGRESS] Please wait...", end="", flush=True)
-                video_info = self.video_downloader.download(video_url)
+                # Step 1: Download video (or use local)
+                print("\n" + "=" * 60)
+                print("[Step 1/7] Downloading video...")
+                print("=" * 60)
+
+                if local_video:
+                    print(f"[INFO] Using local video: {local_video}")
+                    video_info = self.video_downloader.download_from_local(local_video)
+                else:
+                    print(f"[INFO] Downloading from: {video_url}")
+                    print("[PROGRESS] Please wait...", end="", flush=True)
+                    video_info = self.video_downloader.download(video_url)
+                    print(" Complete!")
+
+                print(f"[OK] Video: {video_info['title']}")
+                print(f"[OK] Duration: {video_info['duration']:.2f}s ({int(video_info['duration']//60)}m {int(video_info['duration']%60)}s)")
+                print(f"[OK] Saved to: {video_info['filepath']}")
+
+                # Step 2: Extract audio
+                print("\n" + "=" * 60)
+                print("[Step 2/7] Extracting audio...")
+                print("=" * 60)
+
+                print("[PROGRESS] Extracting...", end="", flush=True)
+                audio_path = self.audio_extractor.extract(video_info["filepath"])
                 print(" Complete!")
-
-            print(f"[OK] Video: {video_info['title']}")
-            print(f"[OK] Duration: {video_info['duration']:.2f}s ({int(video_info['duration']//60)}m {int(video_info['duration']%60)}s)")
-            print(f"[OK] Saved to: {video_info['filepath']}")
-
-            # Step 2: Extract audio
-            print("\n" + "=" * 60)
-            print("[Step 2/7] Extracting audio...")
-            print("=" * 60)
-
-            print("[PROGRESS] Extracting...", end="", flush=True)
-            audio_path = self.audio_extractor.extract(video_info["filepath"])
-            print(" Complete!")
-            print(f"[OK] Audio saved to: {audio_path}")
+                print(f"[OK] Audio saved to: {audio_path}")
 
             # Step 3: Transcribe audio
             if not skip_transcription:
@@ -221,91 +255,96 @@ class PipelineOrchestrator:
                 print("=" * 60)
                 transcript = []
 
-            # Step 4: Extract frames
+            # Step 4: Extract frames (skip in audio-only mode)
             print("\n" + "=" * 60)
             print("[Step 4/7] Extracting frames...")
             print("=" * 60)
 
-            # Determine extraction method based on strategy
-            if frame_strategy == "uniform":
-                method_name = "Uniform distribution (opening + 4 evenly spaced)"
-            elif frame_strategy == "paragraph":
-                method_name = "Paragraph boundaries (opening + 4 at speech gaps)"
-            elif frame_strategy == "fixed_interval":
-                method_name = f"Fixed interval (opening + every {frame_interval}s)"
-            elif frame_strategy == "scene":
-                method_name = "Scene detection (fewer frames, saves API calls)"
-            elif frame_strategy == "interval" or skip_transcription:
-                method_name = "Interval-based"
-            else:  # transcript
-                method_name = "Transcript-aligned"
+            if is_audio_only:
+                print("[INFO] Audio-only mode: skipping frame extraction")
+                frames = []
+                unique_frames = []
+            else:
+                # Determine extraction method based on strategy
+                if frame_strategy == "uniform":
+                    method_name = "Uniform distribution (opening + 4 evenly spaced)"
+                elif frame_strategy == "paragraph":
+                    method_name = "Paragraph boundaries (opening + 4 at speech gaps)"
+                elif frame_strategy == "fixed_interval":
+                    method_name = f"Fixed interval (opening + every {frame_interval}s)"
+                elif frame_strategy == "scene":
+                    method_name = "Scene detection (fewer frames, saves API calls)"
+                elif frame_strategy == "interval" or skip_transcription:
+                    method_name = "Interval-based"
+                else:  # transcript
+                    method_name = "Transcript-aligned"
 
-            print(f"[INFO] Method: {method_name}")
-            print(f"[INFO] Max frames: {max_frames}")
-            print("[PROGRESS] Extracting...", end="", flush=True)
+                print(f"[INFO] Method: {method_name}")
+                print(f"[INFO] Max frames: {max_frames}")
+                print("[PROGRESS] Extracting...", end="", flush=True)
 
-            if frame_strategy in ["uniform", "paragraph", "fixed_interval"]:
-                # Use new strategy-based extraction
-                frames = self.frame_extractor.extract_frames_with_strategy(
-                    video_info["filepath"],
-                    strategy=frame_strategy,
-                    transcript=transcript if frame_strategy == "paragraph" else None,
-                    max_frames=max_frames
-                )
-            elif frame_strategy == "scene":
-                # Use scene detection for key frames
-                frames = self.frame_extractor.extract_key_frames(
-                    video_info["filepath"],
-                    max_frames=max_frames
-                )
-            elif skip_transcription or frame_strategy == "interval":
-                # Use interval-based extraction
-                frames = self.frame_extractor.extract_frames_by_interval(
-                    video_info["filepath"],
-                    max_frames=max_frames
-                )
-            else:  # transcript
-                # Use transcript-aligned extraction
-                frames = self.frame_extractor.extract_frames_by_transcript(
-                    video_info["filepath"],
-                    transcript,
-                    max_frames=max_frames
-                )
-
-            print(" Complete!")
-            print(f"[OK] Extracted {len(frames)} frames")
-
-            # Step 5: Detect content in frames
-            print("\n" + "=" * 60)
-            print("[Step 5/7] Detecting content in frames...")
-            print("=" * 60)
-
-            print("[PROGRESS] Analyzing frames...", end="", flush=True)
-            for i, frame in enumerate(frames):
-                try:
-                    frame["content_type"] = self.frame_extractor.detect_special_content(
-                        frame["path"]
+                if frame_strategy in ["uniform", "paragraph", "fixed_interval"]:
+                    # Use new strategy-based extraction
+                    frames = self.frame_extractor.extract_frames_with_strategy(
+                        video_info["filepath"],
+                        strategy=frame_strategy,
+                        transcript=transcript if frame_strategy == "paragraph" else None,
+                        max_frames=max_frames
                     )
-                except Exception as e:
-                    logger.warning(f"Content detection failed for frame {i}: {e}")
-                    frame["content_type"] = {}
+                elif frame_strategy == "scene":
+                    # Use scene detection for key frames
+                    frames = self.frame_extractor.extract_key_frames(
+                        video_info["filepath"],
+                        max_frames=max_frames
+                    )
+                elif skip_transcription or frame_strategy == "interval":
+                    # Use interval-based extraction
+                    frames = self.frame_extractor.extract_frames_by_interval(
+                        video_info["filepath"],
+                        max_frames=max_frames
+                    )
+                else:  # transcript
+                    # Use transcript-aligned extraction
+                    frames = self.frame_extractor.extract_frames_by_transcript(
+                        video_info["filepath"],
+                        transcript,
+                        max_frames=max_frames
+                    )
 
-            print(" Complete!")
+                print(" Complete!")
+                print(f"[OK] Extracted {len(frames)} frames")
 
-            # Step 6: Deduplicate frames
-            print("\n" + "=" * 60)
-            print("[Step 6/7] Deduplicating frames...")
-            print("=" * 60)
+                # Step 5: Detect content in frames
+                print("\n" + "=" * 60)
+                print("[Step 5/7] Detecting content in frames...")
+                print("=" * 60)
 
-            frame_paths = [f["path"] for f in frames]
-            unique_paths = self.frame_extractor.deduplicate_frames(frame_paths)
+                print("[PROGRESS] Analyzing frames...", end="", flush=True)
+                for i, frame in enumerate(frames):
+                    try:
+                        frame["content_type"] = self.frame_extractor.detect_special_content(
+                            frame["path"]
+                        )
+                    except Exception as e:
+                        logger.warning(f"Content detection failed for frame {i}: {e}")
+                        frame["content_type"] = {}
 
-            # Keep only unique frames
-            unique_frames = [f for f in frames if f["path"] in unique_paths]
-            duplicates = len(frames) - len(unique_frames)
+                print(" Complete!")
 
-            print(f"[OK] Removed {duplicates} duplicate frames")
-            print(f"[OK] Unique frames: {len(unique_frames)}")
+                # Step 6: Deduplicate frames
+                print("\n" + "=" * 60)
+                print("[Step 6/7] Deduplicating frames...")
+                print("=" * 60)
+
+                frame_paths = [f["path"] for f in frames]
+                unique_paths = self.frame_extractor.deduplicate_frames(frame_paths)
+
+                # Keep only unique frames
+                unique_frames = [f for f in frames if f["path"] in unique_paths]
+                duplicates = len(frames) - len(unique_frames)
+
+                print(f"[OK] Removed {duplicates} duplicate frames")
+                print(f"[OK] Unique frames: {len(unique_frames)}")
 
             # Step 7: Analyze frames
             if not skip_analysis and unique_frames:
